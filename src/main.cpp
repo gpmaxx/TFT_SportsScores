@@ -1,5 +1,5 @@
 /*
-*  Version:    2019-01-22 gpmaxx  initial release
+*  Version:    2019-01-22 gpmaxx  NHL initial
 *              2019-03-05 gpmaxx  mlb/nhl version
 *
 *  Desc:       NHL/MLB Scoreboard for Wemos D1 Mini and 128 & 160 TFT_eSPI
@@ -34,14 +34,13 @@
 *              looking right. A different size screen the values will have to
 *              be changed carefully.
 *  ToDo:
-*
 *              - more testing of error scenarios
 *              - more testing of all game scenarios
 *              - testing during playoffs
                - test near end of season
 *
 *   Maybe:
-               - figure out series record for mlb games
+               - figure out series record for mlb games - no API options?
                - exploer use of TFT datum for better and cleaner text positions
                - clean up use of global variables
 *              - make graphics dynamic for display screens other than 128 x 160
@@ -134,6 +133,7 @@ struct CurrentGameData {
   char period[5];    // 1st, 2nd etc
   char timeRemaining[6];  // 12:34
   bool isNHL = true;
+  uint8_t outs = 0;
 };
 
 enum GameStatus {SCHEDULED,STARTED,FINISHED,BUTTON_WAIT};
@@ -420,7 +420,7 @@ void loadTeams() {
   }
 
   currentSportIsNHL = (bool)file.parseInt();
-  Serial.println((currentSportIsNHL) ? "NHL" : "MLB");
+  Serial.printf("Display mode: %s\r\n",(currentSportIsNHL) ? "NHL" : "MLB");
 
   file.close();
 
@@ -662,9 +662,6 @@ void updateTime() {
     lastTimeUpdate = millis();
 
   }
-  else {
-    Serial.println(F("Skipping internet time sync"));
-  }
 
   getFriendlyDate(friendlyDate,sizeof(friendlyDate),now());
   getFriendlyTime(friendlyTime,sizeof(friendlyTime),now());
@@ -770,19 +767,24 @@ void printCurrentGame (CurrentGameData* currentGame) {
   Serial.printf("homeID: %d (%s)\r\n",currentGame->homeID,getTeamAbbreviation(currentGame->homeID,currentGame->isNHL));
   Serial.printf("Away score: %d\r\n",currentGame->awayScore);
   Serial.printf("Home score: %d\r\n",currentGame->homeScore);
-  Serial.print(F("Period: "));
+  Serial.println((currentGame->isNHL) ? "Period: " : "Inning: ");
   Serial.println(currentGame->period);
   Serial.print(F("Time: "));
   Serial.println(currentGame->timeRemaining);
+  Serial.print(F("Outs: "));
+  if (currentGame->isNHL) {
+    Serial.println(F("NA"));
+  }
+  else {
+    Serial.println(currentGame->outs);
+  }
   Serial.println(F("----------"));
 }
 
 void getNextGame(const time_t today,const uint8_t teamID, const bool isNHLGame, NextGameData* nextGameData) {
 
+  Serial.println(F("Geting next game data"));
   uint32_t excludeGameID = nextGameData->gameID;
-
-  Serial.print(F("Getting next game of team: "));
-  Serial.println(teamID);
 
   char* host;
   uint16_t port;
@@ -796,6 +798,7 @@ void getNextGame(const time_t today,const uint8_t teamID, const bool isNHLGame, 
     port = MLB_PORT;
   }
 
+  Serial.printf("Host: %s\r\n",host);
   client.setTimeout(10000);
   if (client.connect(host,port)) {
     queryString = "GET /api/v1/schedule?";
@@ -805,7 +808,8 @@ void getNextGame(const time_t today,const uint8_t teamID, const bool isNHLGame, 
     queryString += "&startDate=";
     queryString += convertDate(today - SECONDS_IN_A_DAY); // need to grab from yesterday
     queryString += "&endDate=";
-    queryString += convertDate(today + SECONDS_IN_A_WEEK);   // ask for 2 weeks worth of games to cover the all star break, playoff pauses and by week
+    // get 10 days worth of data to in order to cover the all star break and playoff gaps
+    queryString += convertDate(today + (SECONDS_IN_A_DAY * 10));
     Serial.print(F("queryString: "));
     Serial.println(queryString);
     queryString += " HTTP/1.0";
@@ -832,7 +836,8 @@ void getNextGame(const time_t today,const uint8_t teamID, const bool isNHLGame, 
     return;
   }
 
-DynamicJsonDocument doc(20000);
+// too big or too small causes no memory error
+DynamicJsonDocument doc(40000);
 DeserializationError err = deserializeJson(doc,client);
 
 if (err) {
@@ -855,7 +860,6 @@ if (err) {
   // this code is dirty and confusing.  Should probably be rewritten
   // but it works for now.
   if (yesterdaysDate.compareTo(gameDate) == 0) {
-    Serial.println(F("yesterday's game"));
     const char* gameStatus = doc["dates"][0]["games"][0]["status"]["abstractGameState"];
     if (strcmp(gameStatus,STATUSCODE_FINAL) != 0) {
         gameToExtract = 0;
@@ -1074,6 +1078,7 @@ void copyGameData(CurrentGameData* dest, CurrentGameData* source) {
   strcpy(dest->period,source->period);
   strcpy(dest->timeRemaining,source->timeRemaining);
   dest->isNHL = source->isNHL;
+  dest->outs = source->outs;
 }
 
 
@@ -1111,8 +1116,6 @@ uint8_t homeScorePosition(const uint8_t theScore) {
 // hacky code that assumed TFT screen size.  Won't look right on other size screens
 void displayCurrentGame(CurrentGameData* gameData) {
 
-  Serial.println(F("display current game"));
-  printCurrentGame(gameData);
   tftOn();
 
   char score[3];
@@ -1132,16 +1135,35 @@ void displayCurrentGame(CurrentGameData* gameData) {
   tft.drawString(score,homeScorePosition(gameData->homeScore),70,7);
   tft.drawString("VS",TFT_HALF_WIDTH - tft.textWidth(score,2),30,2);
   tft.drawString(gameData->period,TFT_HALF_WIDTH - (tft.textWidth(gameData->period,2)/2),90,2);
-  tft.drawString(gameData->timeRemaining,TFT_HALF_WIDTH - (tft.textWidth(gameData->timeRemaining,2)/2),105,2);
+  if ((gameData->isNHL) || (strcmp(gameData->timeRemaining,"FINAL") == 0))  {
+    tft.drawString(gameData->timeRemaining,TFT_HALF_WIDTH - (tft.textWidth(gameData->timeRemaining,2)/2),105,2);
+  }
+  else {
+    if (strcmp(gameData->timeRemaining,"top") == 0) {
+      tft.fillTriangle(58,102,68,102,63,92,TFT_BLACK);
+    }
+    else {
+      tft.fillTriangle(58,92,68,92,63,102,TFT_BLACK);
+    }
+
+    for (uint8_t i = 1; i <= gameData->outs; i++) {
+      tft.fillCircle(63 + (8 * i),110,3,TFT_BLACK);
+    }
+    for (uint8_t i = gameData->outs + 1; i <= 3; i++) {
+      tft.drawCircle(63 + (8 * i),110,3,TFT_BLACK);
+    }
+  }
 
 }
 
 bool getMLBGameIsFinished(const uint32_t gameID) {
+
+  Serial.println(F("Getting is finished"));
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/schedule?gamePk=";
     queryString += gameID;
-    Serial.print(F("queryString: "));
+    Serial.print(F("Querystring: "));
     Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
@@ -1186,18 +1208,19 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   CurrentGameData gameData;
   bool isGameOver = false;
 
-  //Serial.println(F("Getting game data"));
+  Serial.println(F("Getting current game data"));
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/game/";
     queryString += gameSummary->gameID;
     queryString += "/linescore";
+    Serial.printf("Host: %s",MLB_HOST);
+    Serial.print(F("Querystring: "));
+    Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
     queryString = "Host: ";
     queryString += MLB_HOST;
-    Serial.print(F("Querystring:"));
-    Serial.println(queryString);
     client.println(queryString);
     client.println(F("Connection: close"));
     if (client.println() == 0) {
@@ -1228,9 +1251,7 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
     tftMessage("parsing error");
     infiniteLoop();
   }
-  else {
-    Serial.println(F("parsing success"));
-  }
+
 
   // the MLB linescore doesn't include the teamIDs or game status so we have to be hackey
   // using the schedule data
@@ -1246,6 +1267,7 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   else {
     gameData.homeScore = doc["teams"]["home"]["runs"];
     gameData.awayScore = doc["teams"]["away"]["runs"];
+    gameData.outs = doc["outs"];
 
     if ((inning >= 9) && (getMLBGameIsFinished(gameData.gameID))) {
       setGDStrings(&gameData,"","FINAL");
@@ -1287,12 +1309,12 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
     queryString = "GET /api/v1/game/";
     queryString += gameID;
     queryString += "/linescore";
+    Serial.print(F("Querystring: "));
+    Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
     queryString = "Host: ";
     queryString += NHL_HOST;
-    Serial.print(F("Querystring:"));
-    Serial.println(queryString);
     client.println(queryString);
     client.println(F("Connection: close"));
     if (client.println() == 0) {
