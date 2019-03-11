@@ -58,6 +58,8 @@
 #include <Timezone.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
 
 #define FS_NO_GLOBALS
 #include "FS.h"
@@ -95,7 +97,7 @@ const char* MLB_HOST = "statsapi.mlb.com";
 const uint16_t MLB_PORT = 80;
 const uint8_t MLB_NUMTEAM_ICONS = 31;
 
-const uint16_t SPORTID_MARKER = 999;
+const uint16_t SPORTID_MARKER = 9999;
 
 // Game status codes. These are dependant on the statsapi
 // NHL uses numbers and MLB uses characters
@@ -107,6 +109,19 @@ const uint32_t AFTER_GAME_RESULTS_DURATION_S = 60 * 60 * 3; // 3 hours
 const uint32_t GAME_UPDATE_INTERVAL_NHL_S = 65;  // 65 seconds
 const uint32_t GAME_UPDATE_INTERVAL_MLB_S = 60 * 5; // 5 mins
 const uint32_t MAX_SLEEP_INTERVAL_S = 60 * 60; // 1 hour
+
+const char* FIRMWARE_URL = "http://www.lipscomb.ca/IOT/firmware/";
+const char* PROJECT_NAME = "TFT_SportsScores";
+const char* BIN_VERSION_FILENAME = "/firmware_ver.txt";
+const char* SPIFFS_VERSION_FILENAME = "/spiffs_ver.txt";
+const char* BIN_PREFIX = "/firmware_";
+const char* SPIFFS_PREFIX = "/spiffs_";
+const char* BIN_EXT = ".bin";
+const char* SPIFFS_EXT = ".bin";
+
+// !!!!! Change version for each build !!!!!
+const uint16_t CURRENT_BIN_VERSION = 1313;
+
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -141,11 +156,13 @@ enum GameStatus {SCHEDULED,STARTED,FINISHED,BUTTON_WAIT};
 
 ///////////// Global Variables ////////////
 String queryString;
+String tftString;
 uint16_t myNHLTeamID = 24;   // Aniheim         // default - will be overridden by SPIFFS data
 uint16_t myMLBTeamID = 109;  // Arizona      // default - will be overridden by SPIFFS data
 char friendlyDate[12];             // date buffer format: Mon, Jan 23
 char friendlyTime[6];              // time buffer format: 12:34
 bool currentSportIsNHL = true;
+bool otaSelected = false;
 
 /////////// Global Object Variables ///////////
 TimeChangeRule usEDT = {"EDT", Second, Sun, Mar, 2, -240};  //UTC - 4 hours
@@ -508,7 +525,7 @@ uint16_t selectNHLTeam() {
 }
 
 
-void selectTeams() {
+void selectMenu() {
 
   uint16_t selectedTeamID = 0;
 
@@ -520,6 +537,7 @@ void selectTeams() {
           currentSportIsNHL = false;
         }
         else {
+          myNHLTeamID = selectedTeamID;
           break;
         }
     }
@@ -529,18 +547,12 @@ void selectTeams() {
         currentSportIsNHL = true;
       }
       else {
-        break;
+          myMLBTeamID = selectedTeamID;
+          break;
       }
     }
-  }
 
-  if (currentSportIsNHL) {
-    myNHLTeamID = selectedTeamID;
   }
-  else {
-    myMLBTeamID = selectedTeamID;
-  }
-
 
 }
 
@@ -662,16 +674,14 @@ void updateTime() {
     setTime(tz.toLocal(epochTime));
     lastTimeUpdate = millis();
 
+    getFriendlyDate(friendlyDate,sizeof(friendlyDate),now());
+    getFriendlyTime(friendlyTime,sizeof(friendlyTime),now());
+
+    Serial.print(F("Local Date: "));
+    Serial.println(friendlyDate);
+    Serial.print(F("Local time: "));
+    Serial.println(friendlyTime);
   }
-
-  getFriendlyDate(friendlyDate,sizeof(friendlyDate),now());
-  getFriendlyTime(friendlyTime,sizeof(friendlyTime),now());
-
-  Serial.print(F("Local Date: "));
-  Serial.println(friendlyDate);
-  Serial.print(F("Local time: "));
-  Serial.println(friendlyTime);
-
 }
 
 // sync system time with internet time
@@ -762,13 +772,13 @@ void printNextGame(NextGameData* nextGame) {
 }
 
 void printCurrentGame (CurrentGameData* currentGame) {
-  Serial.println(F("----------"));
+  Serial.println(F("-----------------"));
   Serial.printf("Current GameID: %d (%s)\r\n",currentGame->gameID,(currentGame->isNHL) ? "NHL" : "MLB");
   Serial.printf("awayID: %d (%s)\r\n",currentGame->awayID,getTeamAbbreviation(currentGame->awayID,currentGame->isNHL));
   Serial.printf("homeID: %d (%s)\r\n",currentGame->homeID,getTeamAbbreviation(currentGame->homeID,currentGame->isNHL));
   Serial.printf("Away score: %d\r\n",currentGame->awayScore);
   Serial.printf("Home score: %d\r\n",currentGame->homeScore);
-  Serial.println((currentGame->isNHL) ? "Period: " : "Inning: ");
+  Serial.print((currentGame->isNHL) ? "Period: " : "Inning: ");
   Serial.println(currentGame->period);
   Serial.print(F("Time: "));
   Serial.println(currentGame->timeRemaining);
@@ -779,10 +789,10 @@ void printCurrentGame (CurrentGameData* currentGame) {
   else {
     Serial.println(currentGame->outs);
   }
-  Serial.println(F("----------"));
+  Serial.println(F("-----------------"));
 }
 
-void getNextGame(const time_t today,const uint8_t teamID, const bool isNHLGame, NextGameData* nextGameData) {
+void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame, NextGameData* nextGameData) {
 
   Serial.println(F("Geting next game data"));
   uint32_t excludeGameID = nextGameData->gameID;
@@ -1272,6 +1282,7 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
 
     if ((inning >= 9) && (getMLBGameIsFinished(gameData.gameID))) {
       setGDStrings(&gameData,"","FINAL");
+      isGameOver = true;
     }
     else {
       const char* inningStr = doc["currentInningOrdinal"];
@@ -1406,14 +1417,148 @@ void ledSwitchInterrupt() {
     }
 }
 
+void checkForUpdates() {
+
+  HTTPClient httpClient;
+  String BINpath;
+  String BINversionFilePath;
+  String SPIFFSversionFilePath;
+  String imageFile;
+  uint32_t httpCode;
+  uint32_t newBINversion;
+  uint32_t currentSPIFFSversion;
+  uint32_t newSPIFFSversion;
+  bool binUpdateAvailable = false;
+  bool spiffsUpdateAvailable = false;
+  bool buttonPress = false;
+
+  BINpath = FIRMWARE_URL;
+  BINpath += PROJECT_NAME;
+  BINversionFilePath = BINpath + BIN_VERSION_FILENAME;
+  SPIFFSversionFilePath = BINpath + SPIFFS_VERSION_FILENAME;
+
+  Serial.println(F("-----------------"));
+  Serial.println(F("Firmware Checker"));
+  httpClient.begin(BINversionFilePath);
+  httpCode = httpClient.GET();
+  newBINversion = httpClient.getString().toInt();
+  if (httpCode == 200) {
+      Serial.printf("BIN Version Current:   %d\r\n",CURRENT_BIN_VERSION);
+      Serial.printf("BIN Version Available: %d\r\n",newBINversion);
+      binUpdateAvailable = (newBINversion > CURRENT_BIN_VERSION);
+      Serial.printf("BIN Update Available:  %s\r\n", (binUpdateAvailable) ? "Yes" : "No");
+  }
+  else {
+    Serial.printf("BIN HTTP Error: %d\r\n",httpCode);
+  }
+  httpClient.end();
+
+  fs::File file = SPIFFS.open(SPIFFS_VERSION_FILENAME,"r");
+
+  if (!file) {
+    Serial.println(F("SPIFFS Version read error"));
+  }
+  else {
+    currentSPIFFSversion = file.parseInt();
+    file.close();
+    httpClient.begin(SPIFFSversionFilePath);
+    httpCode = httpClient.GET();
+    newSPIFFSversion = httpClient.getString().toInt();
+    if (httpCode == 200) {
+      Serial.printf("SPIFFS Version Current:   %d\r\n",currentSPIFFSversion);
+      Serial.printf("SPIFFS Version Available: %d\r\n",newSPIFFSversion);
+      spiffsUpdateAvailable = (newSPIFFSversion > currentSPIFFSversion);
+      Serial.printf("SPIFFS Update available:  %s\r\n", (spiffsUpdateAvailable) ? "Yes" : "No");
+    }
+    else {
+      Serial.printf("SPIFFS HTTP Error: %d\r\n",httpCode);
+    }
+    httpClient.end();
+
+    file.close();
+
+    Serial.println(F("-----------------"));
+
+    bool proceedWithUpdate = false;
+
+    if (binUpdateAvailable) {
+
+      tftString  = "BIN update available\r\n\r\nPress button to continue";
+      tftMessage(tftString);
+      while (!buttonPress) {
+        debouncer.update();
+        buttonPress = debouncer.rose();
+        yield();
+      }
+
+
+      imageFile = BINpath;
+      imageFile += BIN_PREFIX;
+      imageFile += newBINversion;
+      imageFile += BIN_EXT;
+      Serial.print(F("BIN Image to install: "));
+      Serial.println(imageFile);
+      Serial.println(F("Downloading... DON'T TURN OFF!"));
+      tftMessage("Downloading...\r\nDON'T TURN OFF!");
+      t_httpUpdate_return ret = ESPhttpUpdate.update(imageFile);
+      switch(ret) {
+        case HTTP_UPDATE_FAILED:
+          Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\r\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+          break;
+        case HTTP_UPDATE_NO_UPDATES:
+          Serial.println(F("HTTP_UPDATE_NO_UPDATES"));
+          break;
+      }
+      ESP.reset();
+    }
+    else if (spiffsUpdateAvailable) {
+
+      buttonPress = false;
+      tftString = "SPIFFS update available\r\n\r\nPress button to continue";
+      tftMessage(tftString);
+      while (!buttonPress) {
+        debouncer.update();
+        buttonPress = debouncer.rose();
+        yield();
+      }
+
+      imageFile = BINpath;
+      imageFile += SPIFFS_PREFIX;
+      imageFile += newSPIFFSversion;
+      imageFile += SPIFFS_EXT;
+      Serial.print(F("SPIFFS Image to install: "));
+      Serial.println(imageFile);
+      Serial.println(F("Downloading... DON'T TURN OFF!"));
+      tftMessage("Downloading...\r\nDON'T TURN OFF!");
+      t_httpUpdate_return ret = ESPhttpUpdate.updateSpiffs(imageFile);
+      switch(ret) {
+        case HTTP_UPDATE_FAILED:
+          Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\r\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+          break;
+        case HTTP_UPDATE_NO_UPDATES:
+          Serial.println(F("HTTP_UPDATE_NO_UPDATES"));
+          break;
+      }
+      ESP.reset();
+    }
+
+  }
+}
+
 void setup() {
+  queryString.reserve(100);
+  tftString.reserve(50);
+
   Serial.begin(74880);
-  Serial.println(F("\r\nNHL Scoreboard"));
+
   tft.init(INITR_BLACKTAB);
   tft.setRotation(TFT_ROTATION);
   tft.fillScreen(TFT_BLACK);
 
-  tftMessage("Sports Scoreboard");
+  tftString = "TFT Sports Scoreboard\r\nVer: ";
+  tftString += CURRENT_BIN_VERSION;
+  Serial.println(tftString);
+  tftMessage(tftString);
 
   pinMode(SWITCH_PIN_1,INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(SWITCH_PIN_1),ledSwitchInterrupt,CHANGE);
@@ -1431,6 +1576,12 @@ void setup() {
   }
   Serial.println(F("\r\n\SPIFFS initialised."));
 
+  //wifiManager.resetSettings();
+  wifiManager.setAPCallback(wifiConfigCallback);
+  wifiConnect();
+
+  checkForUpdates();
+
   // load the list of NHL teams
   teamListInit();
 
@@ -1440,21 +1591,13 @@ void setup() {
   // GUI selection of favourite team iff button is being pressed
   debouncer.update();
   if (debouncer.read() == LOW) {
-      selectTeams();
+      selectMenu();
       saveTeams();
-    }
-
-  //wifiManager.resetSettings();
-  wifiManager.setAPCallback(wifiConfigCallback);
-  wifiConnect();
+  }
 
   updateTime();
-
-  queryString.reserve(100);
-
   getNextGame();
   displayNextGame(&nextGameData);
-
 
 }
 
