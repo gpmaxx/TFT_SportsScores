@@ -1,6 +1,7 @@
 /*
 *  Version:    2019-01-22 gpmaxx  NHL initial
 *              2019-03-05 gpmaxx  mlb/nhl version
+               2019-03-10 gpmaxx  OTA updating version
 *
 *  Desc:       NHL/MLB Scoreboard for Wemos D1 Mini and 128 & 160 TFT_eSPI
 *
@@ -820,7 +821,7 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
     queryString += convertDate(today - SECONDS_IN_A_DAY); // need to grab from yesterday
     queryString += "&endDate=";
     // get 10 days worth of data to in order to cover the all star break and playoff gaps
-    queryString += convertDate(today + (SECONDS_IN_A_DAY * 10));
+    queryString += convertDate(today + (SECONDS_IN_A_DAY * 7));
     Serial.print(F("queryString: "));
     Serial.println(queryString);
     queryString += " HTTP/1.0";
@@ -854,6 +855,7 @@ DeserializationError err = deserializeJson(doc,client);
 if (err) {
   Serial.print(F("Parsing error:"));
   Serial.println(err.c_str());
+  tftMessage("Parsing error");
   infiniteLoop();
 }
 
@@ -1022,7 +1024,7 @@ void displayNextGame(NextGameData* nextGameData) {
   tftSwitchControl();
 
   tft.fillScreen(TFT_WHITE);
-  tft.setTextColor(TFT_BLACK,TFT_WHITE);
+  tft.setTextColor(TFT_BLACK);
 
   if (nextGameData->gameID == 0) {  // this shouldn't really happen until the end of the season
     displaySingleLogo(myNHLTeamID,true);
@@ -1100,68 +1102,81 @@ void copyGameData(CurrentGameData* dest, CurrentGameData* source) {
 void playHorn(const bool myTeamScored) {}
 
 // hackey hardcoded postion.up
-uint8_t awayScorePosition(const uint8_t theScore) {
-  uint8_t result = 35;
-  if (theScore == 1) {   // adjust the position if the digit is 1 because it has different width than other characters
-    result = 25;
+int16_t awayScorePosition(const uint8_t theScore) {
+  int16_t position = 20;
+  if (theScore == 1) {
+    position = 10;
   }
-  if (theScore > 9) {
-    result = 0;
+  else {
+    if (theScore >= 20) {
+      position = 2;
+    }
+    else if (theScore >= 10) {
+      position = -8;
+    }
   }
-  return result;
+  return position;
 }
 
 // hackey hardcoded position
-uint8_t homeScorePosition(const uint8_t theScore) {
-  uint8_t result = 110;
+int16_t homeScorePosition(const uint8_t theScore) {
+  int16_t position = 110;
   if (theScore == 1) {
-    result = 100;
+    position = 100;
   }
-  if (theScore > 9) {
-    result = 85;
+  else {
+    if (theScore >= 20) {
+      position = 92;
+    }
+    else if (theScore >= 10) {
+      position = 82;
+    }
   }
-
-  return result;
+  return position;
 }
 
 // hacky code that assumed TFT screen size.  Won't look right on other size screens
 void displayCurrentGame(CurrentGameData* gameData) {
 
-  tftOn();
-
   char score[3];
 
+  Serial.println("Display Current");
+  tftOn();
+
   tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK);
 
   displayTeamLogos(gameData->awayID,gameData->homeID,gameData->isNHL);
 
-  tft.setTextColor(TFT_BLACK,TFT_WHITE);
-  tft.setTextDatum(TC_DATUM);
   memset(score,'\0',sizeof(score));
   snprintf(score,sizeof(score),"%d",gameData->awayScore);
+
   tft.drawString(score,awayScorePosition(gameData->awayScore),70,7);
   memset(score,'\0',sizeof(score));
   snprintf(score,sizeof(score),"%d",gameData->homeScore);
-  tft.setTextDatum(TL_DATUM);
+
   tft.drawString(score,homeScorePosition(gameData->homeScore),70,7);
-  tft.drawString("VS",TFT_HALF_WIDTH - tft.textWidth(score,2),30,2);
-  tft.drawString(gameData->period,TFT_HALF_WIDTH - (tft.textWidth(gameData->period,2)/2),90,2);
+
+  tft.drawString("VS",75,30,2);
+  const uint8_t basePosX = 75;
+  const uint8_t basePosY = 90;
+  tft.drawString(gameData->period,basePosX,basePosY,2);
   if ((gameData->isNHL) || (strcmp(gameData->timeRemaining,"FINAL") == 0))  {
-    tft.drawString(gameData->timeRemaining,TFT_HALF_WIDTH - (tft.textWidth(gameData->timeRemaining,2)/2),105,2);
+    tft.drawString(gameData->timeRemaining,68,105,2);
   }
   else {
     if (strcmp(gameData->timeRemaining,"top") == 0) {
-      tft.fillTriangle(58,102,68,102,63,92,TFT_BLACK);
+      tft.fillTriangle(basePosX-12,basePosY + 12,basePosX-2,basePosY + 12,basePosX-7,basePosY+2,TFT_BLACK);
     }
     else {
-      tft.fillTriangle(58,92,68,92,63,102,TFT_BLACK);
+      tft.fillTriangle(basePosX-12,basePosY+2,basePosX-2,basePosY+2,basePosX-7,basePosY+12,TFT_BLACK);
     }
 
     for (uint8_t i = 1; i <= gameData->outs; i++) {
-      tft.fillCircle(63 + (8 * i),110,3,TFT_BLACK);
+      tft.fillCircle(basePosX-7 + (8 * i),basePosY+20,3,TFT_BLACK);
     }
     for (uint8_t i = gameData->outs + 1; i <= 3; i++) {
-      tft.drawCircle(63 + (8 * i),110,3,TFT_BLACK);
+      tft.drawCircle(basePosX-7 + (8 * i),basePosY+20,3,TFT_BLACK);
     }
   }
 
@@ -1205,6 +1220,7 @@ bool getMLBGameIsFinished(const uint32_t gameID) {
   if (err) {
     Serial.print(F("Parsing error:"));
     Serial.println(err.c_str());
+    tftMessage("Parsing error");
     infiniteLoop();
   }
 
