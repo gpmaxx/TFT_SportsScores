@@ -106,7 +106,7 @@ const char* STATUSCODE_PREGAME = "Preview";
 const char* STATUSCODE_LIVE = "Live";
 const char* STATUSCODE_FINAL = "Final";
 
-const uint32_t AFTER_GAME_RESULTS_DURATION_S = 60 * 60 * 3; // 3 hours
+const uint32_t AFTER_GAME_RESULTS_DURATION_MS = 60 * 60 * 1 * 1000; // 1 hours
 const uint32_t GAME_UPDATE_INTERVAL_NHL_S = 65;  // 65 seconds
 const uint32_t GAME_UPDATE_INTERVAL_MLB_S = 60 * 5; // 5 mins
 const uint32_t MAX_SLEEP_INTERVAL_S = 60 * 60; // 1 hour
@@ -121,7 +121,7 @@ const char* BIN_EXT = ".bin";
 const char* SPIFFS_EXT = ".bin";
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1313;
+const uint16_t CURRENT_BIN_VERSION = 1321;
 
 
 ////////////////// Data Structs ///////////
@@ -1157,14 +1157,15 @@ void displayCurrentGame(CurrentGameData* gameData) {
 
   tft.drawString(score,homeScorePosition(gameData->homeScore),70,7);
 
-  tft.drawString("VS",75,30,2);
-  const uint8_t basePosX = 75;
-  const uint8_t basePosY = 90;
-  tft.drawString(gameData->period,basePosX,basePosY,2);
+  tft.drawString("VS",TFT_HALF_WIDTH - (tft.textWidth("VS",2)/2),30,2);
+
+  tft.drawString(gameData->period,TFT_HALF_WIDTH - (tft.textWidth(gameData->period,2)/2),90,2);
   if ((gameData->isNHL) || (strcmp(gameData->timeRemaining,"FINAL") == 0))  {
-    tft.drawString(gameData->timeRemaining,68,105,2);
+    tft.drawString(gameData->timeRemaining,TFT_HALF_WIDTH - (tft.textWidth(gameData->timeRemaining,2)/2),105,2);
   }
   else {
+    const uint8_t basePosX = 75;
+    const uint8_t basePosY = 90;
     if (strcmp(gameData->timeRemaining,"top") == 0) {
       tft.fillTriangle(basePosX-12,basePosY + 12,basePosX-2,basePosY + 12,basePosX-7,basePosY+2,TFT_BLACK);
     }
@@ -1620,12 +1621,16 @@ void setup() {
 void loop() {
 
   static time_t waitUntil = 0;
+  uint32_t gameFinished;
+
   if (gameStatus == STARTED) {
     if (currentSportIsNHL && (getAndDisplayCurrentNHLGame(nextGameData.gameID,&currentGameData))) {
       gameStatus = FINISHED;
+      gameFinished = millis();
     }
     else if (!currentSportIsNHL && (getAndDisplayCurrentMLBGame(&nextGameData,&currentGameData))) {
        gameStatus = FINISHED;
+       gameFinished = millis();
     }
     else {
       if (currentSportIsNHL) {
@@ -1639,9 +1644,10 @@ void loop() {
 
   else if (gameStatus == BUTTON_WAIT) {
     debouncer.update();
-    if (debouncer.rose() || (now() > nextGameData.startTime))  {
+    if ((debouncer.rose()) || (now() > nextGameData.startTime) || ((millis() - gameFinished) > AFTER_GAME_RESULTS_DURATION_MS))   {
       displayNextGame(&nextGameData);
       gameStatus = SCHEDULED;
+      ledSwitchInterrupt();
     }
   }
   else if (now() > nextGameData.startTime) {
