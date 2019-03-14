@@ -120,8 +120,7 @@ const char* BIN_EXT = ".bin";
 const char* SPIFFS_EXT = ".bin";
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1400;
-
+const uint16_t CURRENT_BIN_VERSION = 1410;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -202,9 +201,14 @@ void infiniteLoop() {
   }
 }
 
+void permanentError(const char* errorMsg) {
+  tftMessage(errorMsg);
+  delay(5000);
+  ESP.restart();
+}
+
 // populate teams list
 void teamListInit_NHL() {
-
   nhlTeams[0].id = 24;
   strncpy(nhlTeams[0].name,"ANA",3);
   nhlTeams[1].id = 53;
@@ -419,8 +423,7 @@ void loadTeams() {
   if (strcmp(teamName,"ERR") == 0) {
     Serial.print(F("Error NHL team not found: "));
     Serial.println(myNHLTeamID);
-    tftMessage("Team error");
-    infiniteLoop();
+    permanentError("Team error");
   }
   else {
     Serial.printf("NHL Team: %s (%d)\r\n",teamName,myNHLTeamID);
@@ -431,8 +434,7 @@ void loadTeams() {
   if (strcmp(teamName,"ERR") == 0) {
     Serial.print(F("Error MLB team not found: "));
     Serial.println(myMLBTeamID);
-    tftMessage("Team error");
-    infiniteLoop();
+    permanentError("Team error");
   }
   else {
     Serial.printf("MLB Team: %s (%d)\r\n",teamName,myMLBTeamID);
@@ -861,8 +863,7 @@ DeserializationError err = deserializeJson(doc,client);
 if (err) {
   Serial.print(F("Parsing error:"));
   Serial.println(err.c_str());
-  tftMessage("Parsing error");
-  infiniteLoop();
+  permanentError(err.c_str());
 }
 
   // this section is awkward because of the casting and assigment issues with the json library
@@ -906,8 +907,7 @@ if (err) {
   Serial.print(F("Extracting game: "));
   Serial.println(gameToExtract);
   if (gameCount <= gameToExtract) {
-    tftMessage("gameCount error");
-    infiniteLoop();
+    permanentError("Game count error");
   }
 
   nextGameData->isNHL = isNHLGame;
@@ -1254,7 +1254,7 @@ bool getMLBGameIsFinished(const uint32_t gameID) {
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders)) {
     Serial.println(F("Invalid response"));
-    infiniteLoop();
+    permanentError("Invalid response");
   }
 
   DynamicJsonDocument doc(20000);
@@ -1263,8 +1263,7 @@ bool getMLBGameIsFinished(const uint32_t gameID) {
   if (err) {
     Serial.print(F("Parsing error:"));
     Serial.println(err.c_str());
-    tftMessage("Parsing error");
-    infiniteLoop();
+    permanentError(err.c_str());
   }
 
   const char* gameStatus = doc["dates"][0]["games"][0]["status"]["abstractGameState"];
@@ -1307,9 +1306,7 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders)) {
     Serial.println(F("Invalid response"));
-    tftMessage("Invalid response");
-    infiniteLoop();
-
+    permanentError("Invalid response");
   }
 
   DynamicJsonDocument doc(10000);
@@ -1318,10 +1315,8 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   if (err) {
     Serial.print(F("Parsing error: "));
     Serial.println(err.c_str());
-    tftMessage("parsing error");
-    infiniteLoop();
+    permanentError(err.c_str());
   }
-
 
   // the MLB linescore doesn't include the teamIDs or game status so we have to be hackey
   // using the schedule data
@@ -1410,9 +1405,7 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders)) {
     Serial.println(F("Invalid response"));
-    tftMessage("Invalid response");
-    infiniteLoop();
-
+    permanentError("Invalid response");
   }
 
   DynamicJsonDocument doc(10000);
@@ -1421,8 +1414,7 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
   if (err) {
     Serial.print(F("Parsing error: "));
     Serial.println(err.c_str());
-    tftMessage("parsing error");
-    infiniteLoop();
+    permanentError(err.c_str());
   }
   else {
     Serial.println(F("parsing success"));
@@ -1638,8 +1630,7 @@ void setup() {
 
   if (!SPIFFS.begin()) {
     Serial.println(F("SPIFFS initialisation failed!"));
-    tftMessage("SPIFFS Error");
-    infiniteLoop();
+    permanentError("SPIFFS Error");
   }
   Serial.println(F("\r\n\SPIFFS initialised."));
 
