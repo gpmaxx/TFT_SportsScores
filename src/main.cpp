@@ -107,8 +107,7 @@ const char* STATUSCODE_LIVE = "Live";
 const char* STATUSCODE_FINAL = "Final";
 
 const uint32_t AFTER_GAME_RESULTS_DURATION_MS = 60 * 60 * 1 * 1000; // 1 hours
-const uint32_t GAME_UPDATE_INTERVAL_NHL_S = 65;  // 65 seconds
-const uint32_t GAME_UPDATE_INTERVAL_MLB_S = 60 * 5; // 5 mins
+const uint32_t GAME_UPDATE_INTERVAL = 65;  // 65 seconds
 const uint32_t MAX_SLEEP_INTERVAL_S = 60 * 60; // 1 hour
 
 const char* FIRMWARE_URL = "http://www.lipscomb.ca/IOT/firmware/";
@@ -121,7 +120,7 @@ const char* BIN_EXT = ".bin";
 const char* SPIFFS_EXT = ".bin";
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1321;
+const uint16_t CURRENT_BIN_VERSION = 1400;
 
 
 ////////////////// Data Structs ///////////
@@ -150,6 +149,7 @@ struct CurrentGameData {
   char period[5];    // 1st, 2nd etc
   char timeRemaining[6];  // 12:34
   bool isNHL = true;
+  bool bases[3];
   uint8_t outs = 0;
 };
 
@@ -781,7 +781,7 @@ void printCurrentGame (CurrentGameData* currentGame) {
   Serial.printf("Home score: %d\r\n",currentGame->homeScore);
   Serial.print((currentGame->isNHL) ? "Period: " : "Inning: ");
   Serial.println(currentGame->period);
-  Serial.print(F("Time: "));
+  Serial.print((currentGame->isNHL) ? "Time:" : "Inning");
   Serial.println(currentGame->timeRemaining);
   Serial.print(F("Outs: "));
   if (currentGame->isNHL) {
@@ -789,6 +789,12 @@ void printCurrentGame (CurrentGameData* currentGame) {
   }
   else {
     Serial.println(currentGame->outs);
+  }
+  if (!currentGame->isNHL) {
+      Serial.println("Bases:");
+      Serial.printf("\tRunner on 1st: %s\r\n", (currentGame->bases[0]) ? "yes" : "no");
+      Serial.printf("\tRunner on 2nd: %s\r\n", (currentGame->bases[1]) ? "yes" : "no");
+      Serial.printf("\tRunner on 3rd: %s\r\n", (currentGame->bases[2]) ? "yes" : "no");
   }
   Serial.println(F("-----------------"));
 }
@@ -1066,20 +1072,20 @@ bool gameStatsChanged(CurrentGameData* prev, CurrentGameData* curr) {
 
   bool result = false;
 
-  if (!((prev->gameID == curr->gameID) && (prev->homeID == curr->homeID) && (prev->awayID == curr->awayID) && (prev->homeScore == curr->homeScore) && (prev->awayScore == curr->awayScore))) {
-    return true;
+  if (prev->gameID != curr->gameID) { return true; }
+  if (prev->awayID != curr->awayID) { return true; }
+  if (prev->homeID != curr->homeID) { return true; }
+  if (prev->awayScore != curr->awayScore) { return true; }
+  if (prev->homeScore != curr->homeScore) { return true; }
+  if (strcmp(prev->period,curr->period) != 0) { return true; }
+  if (strcmp(prev->timeRemaining,curr->timeRemaining) != 0) { return true; }
+  if (!curr->isNHL) {
+      if (prev->outs != curr->outs) { return true; }
+      if (prev->bases[0] != curr->bases[0]) { return true; }
+      if (prev->bases[1] != curr->bases[1]) { return true; }
+      if (prev->bases[2] != curr->bases[2]) { return true; }
   }
-
-  if (strcmp(prev->period,curr->period) != 0) {
-    return true;
-  }
-
-  if (strcmp(prev->timeRemaining,curr->timeRemaining) != 0) {
-    return true;
-  }
-
   return false;
-
 }
 
 void copyGameData(CurrentGameData* dest, CurrentGameData* source) {
@@ -1092,6 +1098,9 @@ void copyGameData(CurrentGameData* dest, CurrentGameData* source) {
   strcpy(dest->timeRemaining,source->timeRemaining);
   dest->isNHL = source->isNHL;
   dest->outs = source->outs;
+  dest->bases[0] = source->bases[0];
+  dest->bases[1] = source->bases[1];
+  dest->bases[2] = source->bases[2];
 }
 
 
@@ -1140,7 +1149,6 @@ void displayCurrentGame(CurrentGameData* gameData) {
 
   char score[3];
 
-  Serial.println("Display Current");
   tftOn();
 
   tft.fillScreen(TFT_WHITE);
@@ -1159,26 +1167,60 @@ void displayCurrentGame(CurrentGameData* gameData) {
 
   tft.drawString("VS",TFT_HALF_WIDTH - (tft.textWidth("VS",2)/2),30,2);
 
-  tft.drawString(gameData->period,TFT_HALF_WIDTH - (tft.textWidth(gameData->period,2)/2),90,2);
+  const uint8_t basePosX = 70;
+  const uint8_t basePosY = 70;
+
+  // should be basePosX but too lazy to change all the other positions
+  tft.drawString(gameData->period,basePosX+3,basePosY,2);
   if ((gameData->isNHL) || (strcmp(gameData->timeRemaining,"FINAL") == 0))  {
     tft.drawString(gameData->timeRemaining,TFT_HALF_WIDTH - (tft.textWidth(gameData->timeRemaining,2)/2),105,2);
   }
   else {
-    const uint8_t basePosX = 75;
-    const uint8_t basePosY = 90;
-    if (strcmp(gameData->timeRemaining,"top") == 0) {
-      tft.fillTriangle(basePosX-12,basePosY + 12,basePosX-2,basePosY + 12,basePosX-7,basePosY+2,TFT_BLACK);
+    // 3rd base
+    if (gameData->bases[2]) {
+      tft.fillTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+25,TFT_BLACK);
+      tft.fillTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+35,TFT_BLACK);
     }
     else {
-      tft.fillTriangle(basePosX-12,basePosY+2,basePosX-2,basePosY+2,basePosX-7,basePosY+12,TFT_BLACK);
+      tft.drawTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+25,TFT_BLACK);
+      tft.drawTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+35,TFT_BLACK);
+      tft.drawLine(basePosX-5+1,basePosY+30,basePosX+5-1,basePosY+30,TFT_WHITE);
+    }
+
+    // 1st base
+    if (gameData->bases[0]) {
+      tft.fillTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+25,TFT_BLACK);
+      tft.fillTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+35,TFT_BLACK);
+    }
+    else {
+      tft.drawTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+25,TFT_BLACK);
+      tft.drawTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+35,TFT_BLACK);
+      tft.drawLine(basePosX+15+1,basePosY+30,basePosX+25-1,basePosY+30,TFT_WHITE);
+    }
+    // 2nd base
+    if (gameData->bases[1]) {
+      tft.fillTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+17,TFT_BLACK);
+      tft.fillTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+27,TFT_BLACK);
+    }
+    else {
+      tft.drawTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+17,TFT_BLACK);
+      tft.drawTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+27,TFT_BLACK);
+      tft.drawLine(basePosX+5+1,basePosY+22,basePosX+15-1,basePosY+22,TFT_WHITE);
+    }
+    if (strcmp(gameData->timeRemaining,"top") == 0) {
+      tft.fillTriangle(basePosX-9,basePosY+10,basePosX+1,basePosY+10,basePosX-4,basePosY+5,TFT_BLACK);
+    }
+    else {
+      tft.fillTriangle(basePosX-9,basePosY+5,basePosX+1,basePosY+5,basePosX-4,basePosY+10,TFT_BLACK);
     }
 
     for (uint8_t i = 1; i <= gameData->outs; i++) {
-      tft.fillCircle(basePosX-7 + (8 * i),basePosY+20,3,TFT_BLACK);
+      tft.fillCircle(basePosX-6 + (8 * i),basePosY+41,3,TFT_BLACK);
     }
     for (uint8_t i = gameData->outs + 1; i <= 3; i++) {
-      tft.drawCircle(basePosX-7 + (8 * i),basePosY+20,3,TFT_BLACK);
+      tft.drawCircle(basePosX-6 + (8 * i),basePosY+41,3,TFT_BLACK);
     }
+
   }
 
 }
@@ -1315,12 +1357,20 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
 
   }
 
+  JsonObject offense = doc["offense"];
+  gameData.bases[0] = offense.containsKey("first");
+  gameData.bases[1] = offense.containsKey("second");
+  gameData.bases[2] = offense.containsKey("third");
+
+  Serial.printf("Runner on first: %d\r\n",gameData.bases[0]);
+  Serial.printf("Runner on second: %d\r\n",gameData.bases[1]);
+  Serial.printf("Runner on third: %d\r\n",gameData.bases[2]);
+
   client.stop();
 
   printCurrentGame(&gameData);
 
   if (gameStatsChanged(prevUpdate,&gameData)) {
-    Serial.println(F("game stats changed"));
     copyGameData(prevUpdate,&gameData);
     displayCurrentGame(prevUpdate);
   }
@@ -1633,15 +1683,9 @@ void loop() {
        gameFinished = millis();
     }
     else {
-      if (currentSportIsNHL) {
-        sleep(GAME_UPDATE_INTERVAL_NHL_S);
-      }
-      else {
-        sleep(GAME_UPDATE_INTERVAL_MLB_S);
-      }
+        sleep(GAME_UPDATE_INTERVAL);
     }
   }
-
   else if (gameStatus == BUTTON_WAIT) {
     debouncer.update();
     if ((debouncer.rose()) || (now() > nextGameData.startTime) || ((millis() - gameFinished) > AFTER_GAME_RESULTS_DURATION_MS))   {
