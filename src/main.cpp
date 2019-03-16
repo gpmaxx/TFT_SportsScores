@@ -43,11 +43,10 @@
 *
 *   Maybe:
                - figure out series record for mlb games - no API options?
-               - exploer use of TFT datum for better and cleaner text positions
                - clean up use of global variables
 *              - make graphics dynamic for display screens other than 128 x 160
 *              - Add boxscore feature
-*                  - the available NHL json is massive and goal scoring summary is now easily available
+*                  - the available NHL json is massive and goal scoring summary is not easily available
 *                      - need better API for boxscore
 *              - Figure out how to list playoff series record - not available in NHL API?
 */
@@ -120,7 +119,7 @@ const char* BIN_EXT = ".bin";
 const char* SPIFFS_EXT = ".bin";
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1410;
+const uint16_t CURRENT_BIN_VERSION = 1420;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -783,28 +782,51 @@ void printCurrentGame (CurrentGameData* currentGame) {
   Serial.printf("Home score: %d\r\n",currentGame->homeScore);
   Serial.print((currentGame->isNHL) ? "Period: " : "Inning: ");
   Serial.println(currentGame->period);
-  Serial.print((currentGame->isNHL) ? "Time:" : "Inning");
+  Serial.print((currentGame->isNHL) ? "Time: " : "Inning: ");
   Serial.println(currentGame->timeRemaining);
-  Serial.print(F("Outs: "));
-  if (currentGame->isNHL) {
-    Serial.println(F("NA"));
-  }
-  else {
-    Serial.println(currentGame->outs);
-  }
   if (!currentGame->isNHL) {
-      Serial.println("Bases:");
-      Serial.printf("\tRunner on 1st: %s\r\n", (currentGame->bases[0]) ? "yes" : "no");
-      Serial.printf("\tRunner on 2nd: %s\r\n", (currentGame->bases[1]) ? "yes" : "no");
-      Serial.printf("\tRunner on 3rd: %s\r\n", (currentGame->bases[2]) ? "yes" : "no");
+    Serial.printf("Outs: %d\r\n",currentGame->outs);
+    Serial.println("Bases:");
+    Serial.printf("\tRunner on 1st: %s\r\n", (currentGame->bases[0]) ? "yes" : "no");
+    Serial.printf("\tRunner on 2nd: %s\r\n", (currentGame->bases[1]) ? "yes" : "no");
+    Serial.printf("\tRunner on 3rd: %s\r\n", (currentGame->bases[2]) ? "yes" : "no");
   }
   Serial.println(F("-----------------"));
+}
+
+void extractNextGame(NextGameData* nextGameData, DynamicJsonDocument* doc,const bool isNHLGame) {
+  nextGameData->gameID = (*doc)["gamePk"];
+  nextGameData->awayID = (*doc)["teams"]["away"]["team"]["id"];
+  nextGameData->homeID = (*doc)["teams"]["home"]["team"]["id"];
+  nextGameData->isNHL = isNHLGame;
+  const char* gameType = (*doc)["gameType"];
+  nextGameData->isPlayoffs = (strcmp(gameType,"P") == 0);
+  String nextGameTS_str = (*doc)["gameDate"];
+  nextGameData->startTime = parseDateTime(nextGameTS_str);
+  JsonObject homeRecord = (*doc)["teams"]["home"]["leagueRecord"];
+  JsonObject awayRecord = (*doc)["teams"]["away"]["leagueRecord"];
+  uint8_t homeWins = homeRecord["wins"];
+  uint8_t awayWins = awayRecord["wins"];
+  uint8_t homeLosses = homeRecord["losses"];
+  uint8_t awayLosses = awayRecord["losses"];
+  if (isNHLGame) {
+    uint8_t homeOT = homeRecord["ot"];
+    uint8_t awayOT = awayRecord["ot"];
+    sprintf(nextGameData->homeRecord,"%d-%d-%d",homeWins,homeLosses,homeOT);
+    sprintf(nextGameData->awayRecord,"%d-%d-%d",awayWins,awayLosses,awayOT);
+  }
+  else {
+      sprintf(nextGameData->homeRecord,"%d-%d",homeWins,homeLosses);
+      sprintf(nextGameData->awayRecord,"%d-%d",awayWins,awayLosses);
+  }
 }
 
 void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame, NextGameData* nextGameData) {
 
   Serial.println(F("Geting next game data"));
   uint32_t excludeGameID = nextGameData->gameID;
+
+  nextGameData->gameID = 0;
 
   char* host;
   uint16_t port;
@@ -850,164 +872,38 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
 
   while(client.connected() && !client.available()) delay(1);
 
-  char endOfHeaders[] = "\r\n\r\n";
-  if (!client.find(endOfHeaders)) {
-    Serial.println(F("Invalid response"));
-    return;
-  }
-
-// too big or too small causes no memory error
-DynamicJsonDocument doc(40000);
-DeserializationError err = deserializeJson(doc,client);
-
-if (err) {
-  Serial.print(F("Parsing error:"));
-  Serial.println(err.c_str());
-  permanentError(err.c_str());
-}
-
-  // this section is awkward because of the casting and assigment issues with the json library
-  // it doesn't seem possible to assgin value to already declared variables so different variables
-  // have to be declared inline for each for branch
-  int8_t gameToExtract = -1;
-
-  const char* gameDate = doc["dates"][0]["date"];
-  const uint8_t gameCount = doc["totalGames"];
-
   String yesterdaysDate = convertDate(today - SECONDS_IN_A_DAY);
 
+  int8_t gameCount = -1;
 
-  // this code is dirty and confusing.  Should probably be rewritten
-  // but it works for now.
-  if (yesterdaysDate.compareTo(gameDate) == 0) {
-    const char* gameStatus = doc["dates"][0]["games"][0]["status"]["abstractGameState"];
-    if (strcmp(gameStatus,STATUSCODE_FINAL) != 0) {
-        gameToExtract = 0;
-    }
-    else {
-      uint32_t gameIDa = doc["dates"][1]["games"][0]["gamePk"];
-      if (gameIDa == excludeGameID) {
-        gameToExtract = 2;
+  while (true) {
+      gameCount++;
+      if ((gameCount == 3) || (!client.find("\"games\" : ["))) {
+        break;
       }
-      else {
-        gameToExtract = 1;
+
+      DynamicJsonDocument doc(5000);
+      DeserializationError err = deserializeJson(doc,client);
+
+      uint32_t gameID = doc["gamePk"];
+      const char* gameStatus = doc["status"]["abstractGameState"];
+
+      if ((strcmp(gameStatus,STATUSCODE_FINAL) != 0) && (gameID != excludeGameID)) {
+        Serial.println("Found next game");
+        Serial.printf("Game count: %d\r\n",gameCount);
+        Serial.printf("GamePK: %d\r\n",gameID);
+        extractNextGame(nextGameData,&doc,isNHLGame);
+        break;
       }
-    }
-  }
-  else {
-    uint32_t gameIDb = doc["dates"][0]["games"][0]["gamePk"];
-    if (gameIDb == excludeGameID) {
-      gameToExtract = 1;
-    }
-    else {
-      gameToExtract = 0;
-    }
   }
 
-  Serial.print(F("Extracting game: "));
-  Serial.println(gameToExtract);
-  if (gameCount <= gameToExtract) {
-    permanentError("Game count error");
-  }
-
-  nextGameData->isNHL = isNHLGame;
-  switch (gameToExtract) {
-    case 0:
-    {
-      JsonObject game0 = doc["dates"][0]["games"][0];
-      nextGameData->gameID = game0["gamePk"];
-      const char* gameType0 = game0["gameType"];
-      nextGameData->isPlayoffs = (strcmp(gameType0,"P") == 0);
-      nextGameData->awayID = game0["teams"]["away"]["team"]["id"];
-      nextGameData->homeID = game0["teams"]["home"]["team"]["id"];
-      String nextGame0TS_str = game0["gameDate"];
-      nextGameData->startTime = parseDateTime(nextGame0TS_str);
-      JsonObject homeRecord0 = game0["teams"]["home"]["leagueRecord"];
-      JsonObject awayRecord0 = game0["teams"]["away"]["leagueRecord"];
-      uint8_t homeWins0 = homeRecord0["wins"];
-      uint8_t awayWins0 = awayRecord0["wins"];
-      uint8_t homeLosses0 = homeRecord0["losses"];
-      uint8_t awayLosses0 = awayRecord0["losses"];
-      if (isNHLGame) {
-        uint8_t homeOT0 = homeRecord0["ot"];
-        uint8_t awayOT0 = awayRecord0["ot"];
-        sprintf(nextGameData->homeRecord,"%d-%d-%d",homeWins0,homeLosses0,homeOT0);
-        sprintf(nextGameData->awayRecord,"%d-%d-%d",awayWins0,awayLosses0,awayOT0);
-      }
-      else {
-          sprintf(nextGameData->homeRecord,"%d-%d",homeWins0,homeLosses0);
-          sprintf(nextGameData->awayRecord,"%d-%d",awayWins0,awayLosses0);
-      }
-
-    }
-    break;
-  case 1:
-    {
-      JsonObject game1 = doc["dates"][1]["games"][0];
-      nextGameData->gameID = game1["gamePk"];
-      const char* gameType1 = game1["gameType"];
-      nextGameData->isPlayoffs = (strcmp(gameType1,"P") == 0);
-      nextGameData->awayID = game1["teams"]["away"]["team"]["id"];
-      nextGameData->homeID = game1["teams"]["home"]["team"]["id"];
-      String nextGame1TS_str = game1["gameDate"];
-      nextGameData->startTime = parseDateTime(nextGame1TS_str);
-      JsonObject homeRecord1 = game1["teams"]["home"]["leagueRecord"];
-      JsonObject awayRecord1 = game1["teams"]["away"]["leagueRecord"];
-      uint8_t homeWins1 = homeRecord1["wins"];
-      uint8_t awayWins1 = awayRecord1["wins"];
-      uint8_t homeLosses1 = homeRecord1["losses"];
-      uint8_t awayLosses1 = awayRecord1["losses"];
-      if (isNHLGame) {
-        uint8_t homeOT1 = homeRecord1["ot"];
-        uint8_t awayOT1 = awayRecord1["ot"];
-        sprintf(nextGameData->homeRecord,"%d-%d-%d",homeWins1,homeLosses1,homeOT1);
-        sprintf(nextGameData->awayRecord,"%d-%d-%d",awayWins1,awayLosses1,awayOT1);
-      }
-      else {
-        sprintf(nextGameData->homeRecord,"%d-%d",homeWins1,homeLosses1);
-        sprintf(nextGameData->awayRecord,"%d-%d",awayWins1,awayLosses1);
-      }
-
-    }
-    break;
-   case 2:
-    {
-      JsonObject game2 = doc["dates"][2]["games"][0];
-      nextGameData->gameID = game2["gamePk"];
-      const char* gameType1 = game2["gameType"];
-      nextGameData->isPlayoffs = (strcmp(gameType1,"P") == 0);
-      nextGameData->awayID = game2["teams"]["away"]["team"]["id"];
-      nextGameData->homeID = game2["teams"]["home"]["team"]["id"];
-      String nextGame2TS_str = game2["gameDate"];
-      nextGameData->startTime = parseDateTime(nextGame2TS_str);
-      JsonObject homeRecord2 = game2["teams"]["home"]["leagueRecord"];
-      JsonObject awayRecord2 = game2["teams"]["away"]["leagueRecord"];
-      uint8_t homeWins2 = homeRecord2["wins"];
-      uint8_t awayWins2 = awayRecord2["wins"];
-      uint8_t homeLosses2 = homeRecord2["losses"];
-      uint8_t awayLosses2 = awayRecord2["losses"];
-      if (isNHLGame) {
-        uint8_t homeOT2 = homeRecord2["ot"];
-        uint8_t awayOT2 = awayRecord2["ot"];
-        sprintf(nextGameData->homeRecord,"%d-%d-%d",homeWins2,homeLosses2,homeOT2);
-        sprintf(nextGameData->awayRecord,"%d-%d-%d",awayWins2,awayLosses2,awayOT2);
-      }
-      else {
-        sprintf(nextGameData->homeRecord,"%d-%d",homeWins2,homeLosses2);
-        sprintf(nextGameData->awayRecord,"%d-%d",awayWins2,awayLosses2);
-      }
-
-    }
-
-    break;
-  } // switch
 
   client.stop();
+  Serial.println("done parsing");
 
   printNextGame(nextGameData);
+  }
 
-
-}
 
 bool switchOneValue() {
   return digitalRead(SWITCH_PIN_1);
@@ -1033,7 +929,12 @@ void displayNextGame(NextGameData* nextGameData) {
   tft.setTextColor(TFT_BLACK);
 
   if (nextGameData->gameID == 0) {  // this shouldn't really happen until the end of the season
-    displaySingleLogo(myNHLTeamID,true);
+    if (currentSportIsNHL) {
+      displaySingleLogo(myNHLTeamID,true);
+    }
+    else {
+      displaySingleLogo(myMLBTeamID,false);
+    }
     tft.drawString("No games scheduled",(tft.width() - tft.textWidth("No games scheduled",2))/2,95,2);
     infiniteLoop();
   }
@@ -1277,7 +1178,7 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   CurrentGameData gameData;
   bool isGameOver = false;
 
-  Serial.println(F("Getting current game data"));
+  Serial.println(F("Getting current gamedata"));
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/game/";
@@ -1357,10 +1258,6 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   gameData.bases[1] = offense.containsKey("second");
   gameData.bases[2] = offense.containsKey("third");
 
-  Serial.printf("Runner on first: %d\r\n",gameData.bases[0]);
-  Serial.printf("Runner on second: %d\r\n",gameData.bases[1]);
-  Serial.printf("Runner on third: %d\r\n",gameData.bases[2]);
-
   client.stop();
 
   printCurrentGame(&gameData);
@@ -1435,9 +1332,12 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
   else {
     const char* p = doc["currentPeriodOrdinal"];   // Json template issues if declartion isn't on same line
     const char* tr = doc["currentPeriodTimeRemaining"];
-    setGDStrings(&gameData,p,tr);
     if (strcmp(tr,STATUSCODE_FINAL) == 0) {
+      setGDStrings(&gameData,"","Final");
       isGameOver = true;
+    }
+    else {
+      setGDStrings(&gameData,p,tr);
     }
   }
 
@@ -1662,16 +1562,16 @@ void setup() {
 void loop() {
 
   static time_t waitUntil = 0;
-  uint32_t gameFinished;
+  static uint32_t gameFinishedTime = 0;
 
   if (gameStatus == STARTED) {
     if (currentSportIsNHL && (getAndDisplayCurrentNHLGame(nextGameData.gameID,&currentGameData))) {
       gameStatus = FINISHED;
-      gameFinished = millis();
+      gameFinishedTime = millis();
     }
     else if (!currentSportIsNHL && (getAndDisplayCurrentMLBGame(&nextGameData,&currentGameData))) {
        gameStatus = FINISHED;
-       gameFinished = millis();
+       gameFinishedTime = millis();
     }
     else {
         sleep(GAME_UPDATE_INTERVAL);
@@ -1679,7 +1579,7 @@ void loop() {
   }
   else if (gameStatus == BUTTON_WAIT) {
     debouncer.update();
-    if ((debouncer.rose()) || (now() > nextGameData.startTime) || ((millis() - gameFinished) > AFTER_GAME_RESULTS_DURATION_MS))   {
+    if ((debouncer.rose()) || (now() > nextGameData.startTime) || ((millis() - gameFinishedTime) > AFTER_GAME_RESULTS_DURATION_MS))   {
       displayNextGame(&nextGameData);
       gameStatus = SCHEDULED;
       ledSwitchInterrupt();
