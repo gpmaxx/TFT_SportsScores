@@ -119,7 +119,7 @@ const char* BIN_EXT = ".bin";
 const char* SPIFFS_EXT = ".bin";
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1420;
+const uint16_t CURRENT_BIN_VERSION = 1422;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -757,7 +757,7 @@ void wifiConnect() {
 
 void printNextGame(NextGameData* nextGame) {
   Serial.println(F("-----------------"));
-  Serial.printf("Next GameID: %d (%s)\r\n",nextGame->gameID,(nextGame->isNHL) ? "NHL" : "MLB");
+  Serial.printf("GameID: %d (%s)\r\n",nextGame->gameID,(nextGame->isNHL) ? "NHL" : "MLB");
   Serial.printf("awayID: %d (%s)\r\n",nextGame->awayID,getTeamAbbreviation(nextGame->awayID,nextGame->isNHL));
   Serial.printf("homeID: %d (%s)\r\n",nextGame->homeID,getTeamAbbreviation(nextGame->homeID,nextGame->isNHL));
 
@@ -775,7 +775,7 @@ void printNextGame(NextGameData* nextGame) {
 
 void printCurrentGame (CurrentGameData* currentGame) {
   Serial.println(F("-----------------"));
-  Serial.printf("Current GameID: %d (%s)\r\n",currentGame->gameID,(currentGame->isNHL) ? "NHL" : "MLB");
+  Serial.printf("GameID: %d (%s)\r\n",currentGame->gameID,(currentGame->isNHL) ? "NHL" : "MLB");
   Serial.printf("awayID: %d (%s)\r\n",currentGame->awayID,getTeamAbbreviation(currentGame->awayID,currentGame->isNHL));
   Serial.printf("homeID: %d (%s)\r\n",currentGame->homeID,getTeamAbbreviation(currentGame->homeID,currentGame->isNHL));
   Serial.printf("Away score: %d\r\n",currentGame->awayScore);
@@ -787,9 +787,9 @@ void printCurrentGame (CurrentGameData* currentGame) {
   if (!currentGame->isNHL) {
     Serial.printf("Outs: %d\r\n",currentGame->outs);
     Serial.println("Bases:");
-    Serial.printf("\tRunner on 1st: %s\r\n", (currentGame->bases[0]) ? "yes" : "no");
-    Serial.printf("\tRunner on 2nd: %s\r\n", (currentGame->bases[1]) ? "yes" : "no");
-    Serial.printf("\tRunner on 3rd: %s\r\n", (currentGame->bases[2]) ? "yes" : "no");
+    Serial.printf("  Runner on 1st: %s\r\n", (currentGame->bases[0]) ? "yes" : "no");
+    Serial.printf("  Runner on 2nd: %s\r\n", (currentGame->bases[1]) ? "yes" : "no");
+    Serial.printf("  Runner on 3rd: %s\r\n", (currentGame->bases[2]) ? "yes" : "no");
   }
   Serial.println(F("-----------------"));
 }
@@ -823,7 +823,6 @@ void extractNextGame(NextGameData* nextGameData, DynamicJsonDocument* doc,const 
 
 void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame, NextGameData* nextGameData) {
 
-  Serial.println(F("Geting next game data"));
   uint32_t excludeGameID = nextGameData->gameID;
 
   nextGameData->gameID = 0;
@@ -840,7 +839,8 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
     port = MLB_PORT;
   }
 
-  Serial.printf("Host: %s\r\n",host);
+  Serial.println(F("Query - Type: Next Game"));
+  Serial.printf("Query - Host: %s\r\n",host);
   client.setTimeout(10000);
   if (client.connect(host,port)) {
     queryString = "GET /api/v1/schedule?";
@@ -852,7 +852,7 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
     queryString += "&endDate=";
     // get 10 days worth of data to in order to cover the all star break and playoff gaps
     queryString += convertDate(today + (SECONDS_IN_A_DAY * 7));
-    Serial.print(F("queryString: "));
+    Serial.print(F("Query - String: "));
     Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
@@ -889,17 +889,12 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
       const char* gameStatus = doc["status"]["abstractGameState"];
 
       if ((strcmp(gameStatus,STATUSCODE_FINAL) != 0) && (gameID != excludeGameID)) {
-        Serial.println("Found next game");
-        Serial.printf("Game count: %d\r\n",gameCount);
-        Serial.printf("GamePK: %d\r\n",gameID);
         extractNextGame(nextGameData,&doc,isNHLGame);
         break;
       }
   }
 
-
   client.stop();
-  Serial.println("done parsing");
 
   printNextGame(nextGameData);
   }
@@ -1128,12 +1123,14 @@ void displayCurrentGame(CurrentGameData* gameData) {
 
 bool getMLBGameIsFinished(const uint32_t gameID) {
 
-  Serial.println(F("Getting is finished"));
+  Serial.println(F("Query - Type: Game Finished"));
+  Serial.print(F("Query - Host: "));
+  Serial.println(MLB_HOST);
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/schedule?gamePk=";
     queryString += gameID;
-    Serial.print(F("Querystring: "));
+    Serial.print("Query - String: ");
     Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
@@ -1178,14 +1175,14 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   CurrentGameData gameData;
   bool isGameOver = false;
 
-  Serial.println(F("Getting current gamedata"));
+  Serial.println(F("Query - Type: Current Game"));
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/game/";
     queryString += gameSummary->gameID;
     queryString += "/linescore";
-    Serial.printf("Host: %s",MLB_HOST);
-    Serial.print(F("Querystring: "));
+    Serial.printf("Query - Host: %s\r\n",MLB_HOST);
+    Serial.print(F("Query - String: "));
     Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
@@ -1274,13 +1271,15 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
   CurrentGameData gameData;
   bool isGameOver = false;
 
-  //Serial.println(F("Getting game data"));
+  Serial.println(F("Query - Type: Current Game NHL"));
+  Serial.print(F("Query - Host: "));
+  Serial.println(NHL_HOST);
   client.setTimeout(10000);
   if (client.connect(NHL_HOST,NHL_PORT)) {
     queryString = "GET /api/v1/game/";
     queryString += gameID;
     queryString += "/linescore";
-    Serial.print(F("Querystring: "));
+    Serial.print(F("Query - String: "));
     Serial.println(queryString);
     queryString += " HTTP/1.0";
     client.println(queryString);
@@ -1313,10 +1312,6 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
     Serial.println(err.c_str());
     permanentError(err.c_str());
   }
-  else {
-    Serial.println(F("parsing success"));
-  }
-
 
   gameData.gameID = gameID;
   gameData.isNHL = true;
