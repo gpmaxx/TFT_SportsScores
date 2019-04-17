@@ -60,6 +60,7 @@
 #include <ArduinoJson.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
+#include <RemoteDebug.h>
 
 #define FS_NO_GLOBALS
 #include "FS.h"
@@ -117,9 +118,10 @@ const char* BIN_PREFIX = "/firmware_";
 const char* SPIFFS_PREFIX = "/spiffs_";
 const char* BIN_EXT = ".bin";
 const char* SPIFFS_EXT = ".bin";
+#define HOST_NAME "remotedebug"
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1422;
+const uint16_t CURRENT_BIN_VERSION = 1500;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -176,9 +178,33 @@ WiFiManager wifiManager;
 NextGameData nextGameData;
 CurrentGameData currentGameData;
 GameStatus gameStatus = SCHEDULED;
+RemoteDebug Debug;
 
 
 ////////////////  Code //////////////////////
+void debugPrint(const uint8_t debugLevel, const char *format, ...) {
+  va_list ap;
+  va_start(ap,format);
+  if (Debug.isActive(debugLevel)) {
+    Debug.printf(format,__func__,ap);
+  }
+  Serial.printf(format,ap);
+  va_end(ap);
+  Debug.handle();
+}
+
+void debugPrint(const uint8_t debugLevel, const __FlashStringHelper *format, ...) {
+  char buf[80];
+  va_list ap;
+  va_start(ap,format);
+  vsnprintf_P(buf, sizeof(buf), (const char *)format, ap);
+  Serial.print(buf);
+  if (Debug.isActive(debugLevel)) {
+    Debug.print(buf);
+  }
+  Debug.handle();
+}
+
 void tftMessage(char* theMessage) {
   tft.fillScreen(TFT_BLACK);
   tft.setTextSize(1);
@@ -194,7 +220,7 @@ void tftMessage(String theMessage) {
 }
 
 void infiniteLoop() {
-  Serial.println(F("infinite delay"));
+  debugPrint(Debug.ERROR,F("infinite delay"));
   while (true) {
     delay(0xFFFFFFFF);
   }
@@ -405,14 +431,11 @@ void displayTeamLogos(const uint8_t awayID, const uint8_t homeID, const bool isN
 
 }
 
-
-
 void loadTeams() {
-  Serial.println(F("Loading data"));
   fs::File file = SPIFFS.open(SPIFFS_DATAFILE,"r");
 
   if (!file) {
-    Serial.println(F("My Team config file error"));
+    debugPrint(Debug.WARNING,(F("My Team config file error\n")));
     tftMessage("My team config error");
   }
 
@@ -420,27 +443,25 @@ void loadTeams() {
 
   char* teamName = getTeamAbbreviation(myNHLTeamID,true);
   if (strcmp(teamName,"ERR") == 0) {
-    Serial.print(F("Error NHL team not found: "));
-    Serial.println(myNHLTeamID);
+    debugPrint(Debug.WARNING,F("Error NHL team not found: %d\r\n"),myNHLTeamID);
     permanentError("Team error");
   }
   else {
-    Serial.printf("NHL Team: %s (%d)\r\n",teamName,myNHLTeamID);
+    debugPrint(Debug.INFO,F("NHL Team: %s (%d)\r\n"),teamName,myNHLTeamID);
   }
 
   myMLBTeamID = file.parseInt();
   teamName = getTeamAbbreviation(myMLBTeamID,false);
   if (strcmp(teamName,"ERR") == 0) {
-    Serial.print(F("Error MLB team not found: "));
-    Serial.println(myMLBTeamID);
+    debugPrint(Debug.WARNING,F("Error MLB team not found: %d\r\n"));
     permanentError("Team error");
   }
   else {
-    Serial.printf("MLB Team: %s (%d)\r\n",teamName,myMLBTeamID);
+    debugPrint(Debug.INFO,F("MLB Team: %s (%d)\r\n"),teamName,myMLBTeamID);
   }
 
   currentSportIsNHL = (bool)file.parseInt();
-  Serial.printf("Display mode: %s\r\n",(currentSportIsNHL) ? "NHL" : "MLB");
+  debugPrint(Debug.INFO,F("Display mode: %s\r\n"),(currentSportIsNHL) ? "NHL" : "MLB");
 
   file.close();
 
@@ -526,7 +547,6 @@ uint16_t selectNHLTeam() {
   }
 }
 
-
 void selectMenu() {
 
   uint16_t selectedTeamID = 0;
@@ -566,13 +586,12 @@ void selectMenu() {
 void saveTeams() {
   fs::File file = SPIFFS.open(SPIFFS_DATAFILE,"w");
   if (!file) {
-    Serial.println(F("Error opening myTeam file for writing"));
+    debugPrint(Debug.WARNING,F("Error opening myTeam file for writing"));
   }
   file.println(myNHLTeamID);
   file.println(myMLBTeamID);
   file.println(currentSportIsNHL);
   file.close();
-
 }
 
 // String of the time expected in format YYYY-MM-DD HH-mm-ss GMT
@@ -602,11 +621,11 @@ String convertDate(const time_t epoch) {
 }
 
 void printDate(const time_t theTime) {
-  Serial.println(convertDate(theTime));
+  debugPrint(Debug.INFO,"%s\r\n",convertDate(theTime).c_str());
 }
 
 void printTime(const time_t theTime) {
-  Serial.printf("%02d:%02d:%02d\r\n",hour(theTime),minute(theTime),second(theTime));
+  debugPrint(Debug.INFO,"%02d:%02d:%02d\r\n",hour(theTime),minute(theTime),second(theTime));
 }
 
 void printDate() {
@@ -644,20 +663,19 @@ void updateTime() {
       client.println(queryString);
       client.println(F("Connection: close"));
       if (client.println() == 0) {
-        Serial.println(F("Failed to send request"));
+        debugPrint(Debug.WARNING,F("Failed to send request\r\n"));
       }
 
     }
     else {
-      Serial.println(F("connection failed")); //error message if no client connect
-      Serial.println();
+      debugPrint(Debug.WARNING,F("connection failed\r\n\r\n")); //error message if no client connect
     }
 
     while(client.connected() && !client.available()) delay(1);
 
     char endOfHeaders[] = "\r\n\r\n";
     if (!client.find(endOfHeaders)) {
-      Serial.println(F("Invalid response"));
+      debugPrint(Debug.WARNING,F("Invalid response\r\n"));
       return;
     }
 
@@ -667,8 +685,7 @@ void updateTime() {
     DeserializationError err = deserializeJson(doc,client);
 
     if (err) {
-      Serial.print(F("Parsing error: "));
-      Serial.println(err.c_str());
+      debugPrint(Debug.WARNING,F("Parsing error: %s\r\n"),err.c_str());
     }
 
     time_t epochTime = doc["unixtime"];
@@ -679,119 +696,63 @@ void updateTime() {
     getFriendlyDate(friendlyDate,sizeof(friendlyDate),now());
     getFriendlyTime(friendlyTime,sizeof(friendlyTime),now());
 
-    Serial.print(F("Local Date: "));
-    Serial.println(friendlyDate);
-    Serial.print(F("Local time: "));
-    Serial.println(friendlyTime);
+    debugPrint(Debug.INFO,F("Local Date: %s\r\n"),friendlyDate);
+    debugPrint(Debug.INFO,F("Local Date: %s\r\n"),friendlyTime);
+
   }
 }
 
-// sync system time with internet time
-void updateTime_old() {
-
-  static uint32_t lastTimeUpdate = 0;
-  String timeStr = "";
-  bool fetchedTime = false;
-  uint32_t t;
-
-  // only bother to sync once per interval
-  if ((lastTimeUpdate == 0) || ((millis() - lastTimeUpdate) > TIME_UPDATE_INTERVAL_MS)) {
-
-    while (timeStr.equals("")) {
-      Serial.println(F("Fetching time from NIST"));
-      if (!client.connect(TIME_HOST,TIME_PORT)) {
-        Serial.println(F("connection failed"));
-        tftMessage("Connection failed");
-        delay(1000);
-        ESP.restart();
-      }
-      // This will send the request to the server
-      t = millis();
-      client.print("HEAD / HTTP/1.1\r\nAccept: */*\r\nUser-Agent: Mozilla/4.0 (compatible; ESP8266 NodeMcu Lua;)");
-      client.print(F("Connection: close\r\n"));
-      Serial.printf("%d: %d\r\n",1,millis()-t);
-      while(client.connected() && !client.available()) delay(1);
-      Serial.printf("%d: %d\r\n",2,millis()-t);
-      if (client.available()) {
-        Serial.printf("%d: %d\r\n",3,millis()-t);
-        timeStr += client.readStringUntil('\r');
-        Serial.printf("%d: %d\r\n",4,millis()-t);
-      }
-      Serial.printf("%d: %d\r\n",5,millis()-t);
-    }
-    Serial.printf("%d: %d\r\n",6,millis()-t);
-    client.stop();
-    timeStr = timeStr.substring(7);
-    timeStr = "20" + timeStr;
-
-    setTime(parseDateTime(timeStr));
-
-    lastTimeUpdate = millis();
-    fetchedTime = true;
-
-  }
-
-}
 
 void wifiConfigCallback(WiFiManager* myWiFiManager) {
-  Serial.println(F("Entered WiFi Config Mode"));
-  Serial.println(WiFi.softAPIP());
-  Serial.println(myWiFiManager->getConfigPortalSSID());
+  debugPrint(Debug.WARNING,F("Entered WiFi Config Mode\r\n"));
+  debugPrint(Debug.WARNING,F("%03d.%03d.%03d.%03d\r\n"),WiFi.softAPIP()[0],WiFi.softAPIP()[1],WiFi.softAPIP()[2],WiFi.softAPIP()[3]);
+  debugPrint(Debug.WARNING,F("%s\r\n"),myWiFiManager->getConfigPortalSSID().c_str());
   tftMessage(myWiFiManager->getConfigPortalSSID());
 }
 
 void wifiConnect() {
-
-  Serial.println(F("Connecting to WiFi..."));
+  debugPrint(Debug.WARNING,F("Connecting to WiFi..."));
   if (!wifiManager.autoConnect(WIFI_CONFIG_AP)) {
-    Serial.println(F("failed to connect timout"));
+    debugPrint(Debug.WARNING,F("failed to connect timout"));
     tftMessage("WiFi connect timeout");
     delay(10000);
     ESP.reset();
     delay(10000);
   }
 
-  Serial.println(F("WiFi Connected"));
+  debugPrint(Debug.WARNING,F("WiFi Connected\r\n"));
 
 }
 
 void printNextGame(NextGameData* nextGame) {
-  Serial.println(F("-----------------"));
-  Serial.printf("GameID: %d (%s)\r\n",nextGame->gameID,(nextGame->isNHL) ? "NHL" : "MLB");
-  Serial.printf("awayID: %d (%s)\r\n",nextGame->awayID,getTeamAbbreviation(nextGame->awayID,nextGame->isNHL));
-  Serial.printf("homeID: %d (%s)\r\n",nextGame->homeID,getTeamAbbreviation(nextGame->homeID,nextGame->isNHL));
-
-  Serial.print(F("StartTime: "));
-  Serial.println(nextGame->startTime);
-  Serial.print(F("Away record: "));
-  Serial.println(nextGame->awayRecord);
-  Serial.print(F("Home record: "));
-  Serial.println(nextGame->homeRecord);
-
-  Serial.print(F("Is Playoffs: "));
-  Serial.println(nextGame->isPlayoffs ? "Yes" : "No");
-  Serial.println(F("-----------------"));
+  debugPrint(Debug.INFO,F("-----------------\r\n"));
+  debugPrint(Debug.INFO,F("GameID: %d (%s)\r\n"),nextGame->gameID,(nextGame->isNHL) ? "NHL" : "MLB");
+  debugPrint(Debug.INFO,F("awayID: %d (%s)\r\n"),nextGame->awayID,getTeamAbbreviation(nextGame->awayID,nextGame->isNHL));
+  debugPrint(Debug.INFO,F("homeID: %d (%s)\r\n"),nextGame->homeID,getTeamAbbreviation(nextGame->homeID,nextGame->isNHL));
+  debugPrint(Debug.INFO,F("StartTime: %d\r\n"),nextGame->startTime);
+  debugPrint(Debug.INFO,F("Away Record: %s\r\n"),nextGame->awayRecord);
+  debugPrint(Debug.INFO,F("Home Record: %s\r\n"),nextGame->homeRecord);
+  debugPrint(Debug.INFO,F("Is Playoffs: %s\r\n"),(nextGame->isPlayoffs ? "Yes" : "No"));
+  debugPrint(Debug.INFO,F("-----------------\r\n"));
 }
 
 void printCurrentGame (CurrentGameData* currentGame) {
-  Serial.println(F("-----------------"));
-  Serial.printf("GameID: %d (%s)\r\n",currentGame->gameID,(currentGame->isNHL) ? "NHL" : "MLB");
-  Serial.printf("awayID: %d (%s)\r\n",currentGame->awayID,getTeamAbbreviation(currentGame->awayID,currentGame->isNHL));
-  Serial.printf("homeID: %d (%s)\r\n",currentGame->homeID,getTeamAbbreviation(currentGame->homeID,currentGame->isNHL));
-  Serial.printf("Away score: %d\r\n",currentGame->awayScore);
-  Serial.printf("Home score: %d\r\n",currentGame->homeScore);
-  Serial.print((currentGame->isNHL) ? "Period: " : "Inning: ");
-  Serial.println(currentGame->period);
-  Serial.print((currentGame->isNHL) ? "Time: " : "Inning: ");
-  Serial.println(currentGame->timeRemaining);
+  debugPrint(Debug.INFO,F("-----------------\r\n"));
+  debugPrint(Debug.INFO,F("GameID: %d (%s)\r\n"),currentGame->gameID,(currentGame->isNHL) ? "NHL" : "MLB");
+  debugPrint(Debug.INFO,F("awayID: %d (%s)\r\n"),currentGame->awayID,getTeamAbbreviation(currentGame->awayID,currentGame->isNHL));
+  debugPrint(Debug.INFO,F("homeID: %d (%s)\r\n"),currentGame->homeID,getTeamAbbreviation(currentGame->homeID,currentGame->isNHL));
+  debugPrint(Debug.INFO,F("Away score: %d\r\n"),currentGame->awayScore);
+  debugPrint(Debug.INFO,F("Home score: %d\r\n"),currentGame->homeScore);
+  debugPrint(Debug.INFO,F("%s %s\r\n"),(currentGame->isNHL) ? "Period:" : "Inning:", currentGame->period);
+  debugPrint(Debug.INFO,F("%s %d\r\n"),(currentGame->isNHL) ? "Time:" : "Inning:", currentGame->timeRemaining);
   if (!currentGame->isNHL) {
-    Serial.printf("Outs: %d\r\n",currentGame->outs);
-    Serial.println("Bases:");
-    Serial.printf("  Runner on 1st: %s\r\n", (currentGame->bases[0]) ? "yes" : "no");
-    Serial.printf("  Runner on 2nd: %s\r\n", (currentGame->bases[1]) ? "yes" : "no");
-    Serial.printf("  Runner on 3rd: %s\r\n", (currentGame->bases[2]) ? "yes" : "no");
+    debugPrint(Debug.INFO,F("Outs: %d\r\n"),currentGame->outs);
+    debugPrint(Debug.INFO,F("Bases:\r\n"));
+    debugPrint(Debug.INFO,F(" Running on 1st: %s\r\n"),(currentGame->bases[0]) ? "yes" : "no");
+    debugPrint(Debug.INFO,F(" Running on 2nd: %s\r\n"),(currentGame->bases[1]) ? "yes" : "no");
+    debugPrint(Debug.INFO,F(" Running on 3rd: %s\r\n"),(currentGame->bases[2]) ? "yes" : "no");
   }
-  Serial.println(F("-----------------"));
+  debugPrint(Debug.INFO,F("-----------------\r\n"));
 }
 
 void extractNextGame(NextGameData* nextGameData, DynamicJsonDocument* doc,const bool isNHLGame) {
@@ -839,8 +800,8 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
     port = MLB_PORT;
   }
 
-  Serial.println(F("Query - Type: Next Game"));
-  Serial.printf("Query - Host: %s\r\n",host);
+  debugPrint(Debug.INFO,F("Query - Type: Next Game"));
+  debugPrint(Debug.INFO,F("Query - Host: %s\r\n"),host);
   client.setTimeout(10000);
   if (client.connect(host,port)) {
     queryString = "GET /api/v1/schedule?";
@@ -852,8 +813,8 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
     queryString += "&endDate=";
     // get 10 days worth of data to in order to cover the all star break and playoff gaps
     queryString += convertDate(today + (SECONDS_IN_A_DAY * 7));
-    Serial.print(F("Query - String: "));
-    Serial.println(queryString);
+    debugPrint(Debug.INFO,F("Query - String: %s\r\n"),queryString.c_str());
+
     queryString += " HTTP/1.0";
     client.println(queryString);
     queryString = "Host: ";
@@ -861,13 +822,11 @@ void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame,
     client.println(queryString);
     client.println(F("Connection: close"));
     if (client.println() == 0) {
-      Serial.println(F("Failed to send request"));
+      debugPrint(Debug.WARNING,F("Failed to send request\r\n"));
     }
-
   }
   else {
-    Serial.println(F("connection failed")); //error message if no client connect
-    Serial.println();
+    debugPrint(Debug.WARNING,F("connection failed\r\n")); //error message if no client connect
   }
 
   while(client.connected() && !client.available()) delay(1);
@@ -1123,15 +1082,15 @@ void displayCurrentGame(CurrentGameData* gameData) {
 
 bool getMLBGameIsFinished(const uint32_t gameID) {
 
-  Serial.println(F("Query - Type: Game Finished"));
-  Serial.print(F("Query - Host: "));
-  Serial.println(MLB_HOST);
+  debugPrint(Debug.INFO,F("Query - Type: Game Finished\r\n"));
+  debugPrint(Debug.INFO,F("Query - Host: %s\r\n"),MLB_HOST);
+
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/schedule?gamePk=";
     queryString += gameID;
-    Serial.print("Query - String: ");
-    Serial.println(queryString);
+    debugPrint(Debug.INFO,F("Query - String: %s\r\n"),queryString.c_str());
+
     queryString += " HTTP/1.0";
     client.println(queryString);
     queryString = "Host: ";
@@ -1139,19 +1098,18 @@ bool getMLBGameIsFinished(const uint32_t gameID) {
     client.println(queryString);
     client.println(F("Connection: close"));
     if (client.println() == 0) {
-      Serial.println(F("Failed to send request"));
+      debugPrint(Debug.WARNING,F("Failed to send request"));
     }
   }
   else {
-    Serial.println(F("connection failed")); //error message if no client connect
-    Serial.println();
+    debugPrint(Debug.WARNING,F("connection failed\r\n")); //error message if no client connect
   }
 
   while(client.connected() && !client.available()) delay(1);
 
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders)) {
-    Serial.println(F("Invalid response"));
+    debugPrint(Debug.WARNING,F("Invalid response"));
     permanentError("Invalid response");
   }
 
@@ -1159,8 +1117,7 @@ bool getMLBGameIsFinished(const uint32_t gameID) {
   DeserializationError err = deserializeJson(doc,client);
 
   if (err) {
-    Serial.print(F("Parsing error:"));
-    Serial.println(err.c_str());
+    debugPrint(Debug.WARNING,F("Parsing error: %s\r\n"),err.c_str());
     permanentError(err.c_str());
   }
 
@@ -1175,15 +1132,15 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   CurrentGameData gameData;
   bool isGameOver = false;
 
-  Serial.println(F("Query - Type: Current Game"));
+  debugPrint(Debug.WARNING,F("Query - Type: Current Game"));
   client.setTimeout(10000);
   if (client.connect(MLB_HOST,MLB_PORT)) {
     queryString = "GET /api/v1/game/";
     queryString += gameSummary->gameID;
     queryString += "/linescore";
-    Serial.printf("Query - Host: %s\r\n",MLB_HOST);
-    Serial.print(F("Query - String: "));
-    Serial.println(queryString);
+    debugPrint(Debug.WARNING,F("Query - Host: %s\r\n"),MLB_HOST);
+    debugPrint(Debug.WARNING,F("Query - String: %s\r\n"),queryString.c_str());
+
     queryString += " HTTP/1.0";
     client.println(queryString);
     queryString = "Host: ";
@@ -1191,19 +1148,18 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
     client.println(queryString);
     client.println(F("Connection: close"));
     if (client.println() == 0) {
-      Serial.println(F("Failed to send request"));
+      debugPrint(Debug.WARNING,F("Failed to send request\r\n"));
     }
-
-  }else {
-    Serial.println(F("connection failed")); //error message if no client connect
-    Serial.println();
+  }
+  else {
+    debugPrint(Debug.WARNING,F("connection failed\r\n")); //error message if no client connect
   }
 
   while(client.connected() && !client.available()) delay(1);
 
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders)) {
-    Serial.println(F("Invalid response"));
+    debugPrint(Debug.WARNING,F("Invalid response\r\n"));
     permanentError("Invalid response");
   }
 
@@ -1211,8 +1167,7 @@ bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* pre
   DeserializationError err = deserializeJson(doc,client);
 
   if (err) {
-    Serial.print(F("Parsing error: "));
-    Serial.println(err.c_str());
+    debugPrint(Debug.WARNING,F("Parsing error: %s\r\n"));
     permanentError(err.c_str());
   }
 
@@ -1271,16 +1226,16 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
   CurrentGameData gameData;
   bool isGameOver = false;
 
-  Serial.println(F("Query - Type: Current Game NHL"));
-  Serial.print(F("Query - Host: "));
-  Serial.println(NHL_HOST);
+  debugPrint(Debug.WARNING,F("Query - Type: Current Game NHL\r\n"));
+  debugPrint(Debug.WARNING,F("Query - Host: %s\r\n"),NHL_HOST);
+
   client.setTimeout(10000);
   if (client.connect(NHL_HOST,NHL_PORT)) {
     queryString = "GET /api/v1/game/";
     queryString += gameID;
     queryString += "/linescore";
-    Serial.print(F("Query - String: "));
-    Serial.println(queryString);
+    debugPrint(Debug.WARNING,F("Query - String: %s\r\n"),queryString.c_str());
+
     queryString += " HTTP/1.0";
     client.println(queryString);
     queryString = "Host: ";
@@ -1288,19 +1243,19 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
     client.println(queryString);
     client.println(F("Connection: close"));
     if (client.println() == 0) {
-      Serial.println(F("Failed to send request"));
+      debugPrint(Debug.WARNING,F("Failed to send request\r\n"));
     }
 
-  }else {
-    Serial.println(F("connection failed")); //error message if no client connect
-    Serial.println();
+  }
+  else {
+    debugPrint(Debug.WARNING,F("connection failed\r\n")); //error message if no client connect
   }
 
   while(client.connected() && !client.available()) delay(1);
 
   char endOfHeaders[] = "\r\n\r\n";
   if (!client.find(endOfHeaders)) {
-    Serial.println(F("Invalid response"));
+    debugPrint(Debug.WARNING,F("Invalid response\r\n"));
     permanentError("Invalid response");
   }
 
@@ -1308,8 +1263,7 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
   DeserializationError err = deserializeJson(doc,client);
 
   if (err) {
-    Serial.print(F("Parsing error: "));
-    Serial.println(err.c_str());
+    debugPrint(Debug.WARNING,F("Parsing error: %s\r\n"),err.c_str());
     permanentError(err.c_str());
   }
 
@@ -1352,15 +1306,13 @@ bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpd
 
 // "sleep" function. Calls a delay which reduces the power consumption as the ESP is put into lightSleep mode automatically
 void sleep(uint32_t timeInSeconds) {
-  Serial.print(F("Sleeping for "));
-  Serial.print(timeInSeconds);
-  Serial.println(F(" seconds"));
+  debugPrint(Debug.INFO,F("Sleeping for %d seconds\r\n"),timeInSeconds);
   delay(timeInSeconds * 1000);
-  Serial.println(F("Woke up"));
+  debugPrint(Debug.INFO,F("Woke up"));
 }
 
 void ledSwitchInterrupt() {
-    Serial.println(F("switch interrupt"));
+    debugPrint(Debug.WARNING,F("switch interrupt\r\n"));
     if (digitalRead(SWITCH_PIN_1)) {
       digitalWrite(LED_BACKLIGHT_PIN,HIGH);
     }
@@ -1391,26 +1343,26 @@ void checkForUpdates() {
   BINversionFilePath = BINpath + BIN_VERSION_FILENAME;
   SPIFFSversionFilePath = BINpath + SPIFFS_VERSION_FILENAME;
 
-  Serial.println(F("-----------------"));
-  Serial.println(F("Firmware Checker"));
+  debugPrint(Debug.INFO,F("-----------------\r\n"));
+  debugPrint(Debug.INFO,F("Firmware Checker\r\n"));
   httpClient.begin(BINversionFilePath);
   httpCode = httpClient.GET();
   newBINversion = httpClient.getString().toInt();
   if (httpCode == 200) {
-      Serial.printf("BIN Version Current:   %d\r\n",CURRENT_BIN_VERSION);
-      Serial.printf("BIN Version Available: %d\r\n",newBINversion);
+      debugPrint(Debug.INFO,F("BIN Version Current:   %d\r\n"),CURRENT_BIN_VERSION);
+      debugPrint(Debug.INFO,F("BIN Version Available: %d\r\n"),newBINversion);
       binUpdateAvailable = (newBINversion > CURRENT_BIN_VERSION);
-      Serial.printf("BIN Update Available:  %s\r\n", (binUpdateAvailable) ? "Yes" : "No");
+      debugPrint(Debug.INFO,F("BIN Update Available:  %s\r\n"), (binUpdateAvailable) ? "Yes" : "No");
   }
   else {
-    Serial.printf("BIN HTTP Error: %d\r\n",httpCode);
+    debugPrint(Debug.INFO,F("BIN HTTP Error: %d\r\n"),httpCode);
   }
   httpClient.end();
 
   fs::File file = SPIFFS.open(SPIFFS_VERSION_FILENAME,"r");
 
   if (!file) {
-    Serial.println(F("SPIFFS Version read error"));
+    debugPrint(Debug.WARNING,F("SPIFFS Version read error\r\n"));
   }
   else {
     currentSPIFFSversion = file.parseInt();
@@ -1419,19 +1371,19 @@ void checkForUpdates() {
     httpCode = httpClient.GET();
     newSPIFFSversion = httpClient.getString().toInt();
     if (httpCode == 200) {
-      Serial.printf("SPIFFS Version Current:   %d\r\n",currentSPIFFSversion);
-      Serial.printf("SPIFFS Version Available: %d\r\n",newSPIFFSversion);
+      debugPrint(Debug.INFO,F("SPIFFS Version Current:   %d\r\n"),currentSPIFFSversion);
+      debugPrint(Debug.INFO,F("SPIFFS Version Available: %d\r\n"),newSPIFFSversion);
       spiffsUpdateAvailable = (newSPIFFSversion > currentSPIFFSversion);
-      Serial.printf("SPIFFS Update available:  %s\r\n", (spiffsUpdateAvailable) ? "Yes" : "No");
+      debugPrint(Debug.INFO,F("SPIFFS Update available:  %s\r\n"), (spiffsUpdateAvailable) ? "Yes" : "No");
     }
     else {
-      Serial.printf("SPIFFS HTTP Error: %d\r\n",httpCode);
+      debugPrint(Debug.INFO,F("SPIFFS HTTP Error: %d\r\n"),httpCode);
     }
     httpClient.end();
 
     file.close();
 
-    Serial.println(F("-----------------"));
+    debugPrint(Debug.INFO,F("-----------------\r\n"));
 
     bool proceedWithUpdate = false;
 
@@ -1450,17 +1402,16 @@ void checkForUpdates() {
       imageFile += BIN_PREFIX;
       imageFile += newBINversion;
       imageFile += BIN_EXT;
-      Serial.print(F("BIN Image to install: "));
-      Serial.println(imageFile);
-      Serial.println(F("Downloading... DON'T TURN OFF!"));
+      debugPrint(Debug.INFO,F("BIN Image to install: %s\r\n"),imageFile.c_str());
+      debugPrint(Debug.INFO,F("Downloading... DON'T TURN OFF!\r\n"));
       tftMessage("Downloading...\r\nDON'T TURN OFF!");
       t_httpUpdate_return ret = ESPhttpUpdate.update(imageFile);
       switch(ret) {
         case HTTP_UPDATE_FAILED:
-          Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\r\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+          debugPrint(Debug.ERROR,F("HTTP_UPDATE_FAILED Error (%d): %s\r\n"), ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
           break;
         case HTTP_UPDATE_NO_UPDATES:
-          Serial.println(F("HTTP_UPDATE_NO_UPDATES"));
+          debugPrint(Debug.ERROR,F("HTTP_UPDATE_NO_UPDATES\r\n"));
           break;
       }
       ESP.reset();
@@ -1480,17 +1431,16 @@ void checkForUpdates() {
       imageFile += SPIFFS_PREFIX;
       imageFile += newSPIFFSversion;
       imageFile += SPIFFS_EXT;
-      Serial.print(F("SPIFFS Image to install: "));
-      Serial.println(imageFile);
-      Serial.println(F("Downloading... DON'T TURN OFF!"));
+      debugPrint(Debug.WARNING,F("SPIFFS Image to install: %s\r\n"),imageFile.c_str());
+      debugPrint(Debug.WARNING,F("Downloading... DON'T TURN OFF!\r\n"));
       tftMessage("Downloading...\r\nDON'T TURN OFF!");
       t_httpUpdate_return ret = ESPhttpUpdate.updateSpiffs(imageFile);
       switch(ret) {
         case HTTP_UPDATE_FAILED:
-          Serial.printf("HTTP_UPDATE_FAILED Error (%d): %s\r\n", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+          debugPrint(Debug.ERROR,F("HTTP_UPDATE_FAILED Error (%d): %s\r\n"), ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
           break;
         case HTTP_UPDATE_NO_UPDATES:
-          Serial.println(F("HTTP_UPDATE_NO_UPDATES"));
+          debugPrint(Debug.ERROR,F("HTTP_UPDATE_NO_UPDATES\r\n"));
           break;
       }
       ESP.reset();
@@ -1511,7 +1461,8 @@ void setup() {
 
   tftString = "TFT Sports Scoreboard\r\nVer: ";
   tftString += CURRENT_BIN_VERSION;
-  Serial.println(tftString);
+  debugPrint(Debug.WARNING,F("%s\r\n"),tftString.c_str());
+
   tftMessage(tftString);
 
   pinMode(SWITCH_PIN_1,INPUT_PULLUP);
@@ -1524,14 +1475,20 @@ void setup() {
   debouncer.interval(DEBOUNCE_INTERVAL);
 
   if (!SPIFFS.begin()) {
-    Serial.println(F("SPIFFS initialisation failed!"));
+    debugPrint(Debug.WARNING,F("SPIFFS initialisation failed!\r\n"));
     permanentError("SPIFFS Error");
   }
-  Serial.println(F("\r\n\SPIFFS initialised."));
+  debugPrint(Debug.WARNING,F("\r\n\SPIFFS initialised.\r\n"));
 
   //wifiManager.resetSettings();
   wifiManager.setAPCallback(wifiConfigCallback);
   wifiConnect();
+
+  // Initialize RemoteDebug
+  Debug.begin(HOST_NAME,Debug.DEBUG);
+  Debug.setResetCmdEnabled(true);
+  Debug.showProfiler(false);
+  Debug.showColors(true);
 
   checkForUpdates();
 
@@ -1594,4 +1551,6 @@ void loop() {
   }
 
   updateTime();
+
+  yield();
 }
