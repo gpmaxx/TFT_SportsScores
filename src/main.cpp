@@ -121,7 +121,7 @@ const char* SPIFFS_EXT = ".bin";
 #define HOST_NAME "remotedebug"
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1500;
+const uint16_t CURRENT_BIN_VERSION = 1501;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -322,7 +322,7 @@ void teamListInit_MLB() {
   strncpy(mlbTeams[8].name,"COL",3);
   mlbTeams[9].id = 116;
   strncpy(mlbTeams[9].name,"DET",3);
-  mlbTeams[10].id = 17;
+  mlbTeams[10].id = 117;
   strncpy(mlbTeams[10].name,"HOU",3);
   mlbTeams[11].id = 118;
   strncpy(mlbTeams[11].name,"KCR",3);
