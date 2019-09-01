@@ -121,7 +121,7 @@ const char* SPIFFS_EXT = ".bin";
 #define HOST_NAME "remotedebug"
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1501;
+const uint16_t CURRENT_BIN_VERSION = 1510;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
@@ -182,6 +182,9 @@ RemoteDebug Debug;
 
 
 ////////////////  Code //////////////////////
+
+void ICACHE_RAM_ATTR ledSwitchInterrupt();  // required from ESP 2.5.1
+
 void debugPrint(const uint8_t debugLevel, const char *format, ...) {
   va_list ap;
   va_start(ap,format);
@@ -1312,13 +1315,12 @@ void sleep(uint32_t timeInSeconds) {
 }
 
 void ledSwitchInterrupt() {
-    debugPrint(Debug.WARNING,F("switch interrupt\r\n"));
     if (digitalRead(SWITCH_PIN_1)) {
       digitalWrite(LED_BACKLIGHT_PIN,HIGH);
     }
     else {
       if (gameStatus == SCHEDULED) {
-          digitalWrite(LED_BACKLIGHT_PIN,LOW);
+        digitalWrite(LED_BACKLIGHT_PIN,LOW);
       }
     }
 }
