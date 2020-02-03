@@ -121,7 +121,7 @@ const char* SPIFFS_EXT = ".bin";
 #define HOST_NAME "remotedebug"
 
 // !!!!! Change version for each build !!!!!
-const uint16_t CURRENT_BIN_VERSION = 1510;
+const uint16_t CURRENT_BIN_VERSION = 1511;
 
 ////////////////// Data Structs ///////////
 struct TeamInfo {
