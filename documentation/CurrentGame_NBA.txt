@@ -1,0 +1,49 @@
+Query URL: http://site.api.espn.com/apis/site/v2/sports/basketball/nba/summary?event=401307570
+
+Query - Type: Current Game NBA
+{
+  "id": true,
+  "competitors": [
+    {
+      "id": true,
+      "homeAway": true,
+      "score": true
+    },
+    {
+      "id": true,
+      "homeAway": true
+    }
+  ],
+  "status": {
+    "displayClock": true,
+    "period": true,
+    "type": {
+      "name": true
+    }
+  }
+}
+
+{
+  "id": "401307570",
+  "competitors": [
+    {
+      "id": "2",
+      "homeAway": "home",
+      "score": "2"
+    },
+    {
+      "id": "18",
+      "homeAway": "away",
+      "score": "1"
+    }
+  ],
+  "status": {
+    "displayClock": "11:14",
+    "period": 1,
+    "type": {
+      "name": "STATUS_IN_PROGRESS"
+    }
+  }
+}
+
+

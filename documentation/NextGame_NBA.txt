@@ -1,0 +1,94 @@
+Query URL: http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?limit=100&dates=20210406-20210410
+
+Query - Type: Next NBA Game
+{
+  "id": true,
+  "date": true,
+  "competitions": [
+    {
+      "competitors": [
+        {
+          "id": true,
+          "homeAway": true,
+          "score": true,
+          "records": [
+            {
+              "type": true,
+              "summary": true
+            }
+          ]
+        },
+        {
+          "id": true,
+          "homeAway": true,
+          "records": [
+            {
+              "type": true,
+              "summary": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "status": {
+    "type": {
+      "name": true
+    }
+  }
+}
+
+
+{
+  "id": "401307570",
+  "date": "2021-04-07T23:30Z",
+  "competitions": [
+    {
+      "competitors": [
+        {
+          "id": "2",
+          "homeAway": "home",
+          "score": "0",
+          "records": [
+            {
+              "type": "total",
+              "summary": "25-26"
+            },
+            {
+              "type": "home",
+              "summary": "15-10"
+            },
+            {
+              "type": "road",
+              "summary": "10-16"
+            }
+          ]
+        },
+        {
+          "id": "18",
+          "homeAway": "away",
+          "score": "0",
+          "records": [
+            {
+              "type": "total",
+              "summary": "25-26"
+            },
+            {
+              "type": "home",
+              "summary": "14-10"
+            },
+            {
+              "type": "road",
+              "summary": "11-16"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "status": {
+    "type": {
+      "name": "STATUS_SCHEDULED"
+    }
+  }
+}

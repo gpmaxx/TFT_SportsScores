@@ -1,0 +1,45 @@
+Query URL: http://statsapi.web.nhl.com/api/v1/game/2020020622/linescore
+
+{
+  "currentPeriod": true,
+  "currentPeriodOrdinal": true,
+  "currentPeriodTimeRemaining": true,
+  "teams": {
+    "home": {
+      "team": {
+        "id": true
+      },
+      "goals": true,
+      "powerPlay": true
+    },
+    "away": {
+      "team": {
+        "id": true
+      },
+      "goals": true,
+      "powerPlay": true
+    }
+  }
+}
+
+{
+  "currentPeriod": 1,
+  "currentPeriodOrdinal": "1st",
+  "currentPeriodTimeRemaining": "END",
+  "teams": {
+    "home": {
+      "team": {
+        "id": 10
+      },
+      "goals": 1,
+      "powerPlay": false
+    },
+    "away": {
+      "team": {
+        "id": 8
+      },
+      "goals": 1,
+      "powerPlay": false
+    }
+  }
+}

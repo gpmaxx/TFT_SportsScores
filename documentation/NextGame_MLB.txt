@@ -1,0 +1,63 @@
+Query URL: http://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=110&startDate=2021-04-17&endDate=2021-04-25
+
+{
+  "games": [
+    {
+      "gamePk": true,
+      "gameType": true,
+      "gameDate": true,
+      "status": {
+        "abstractGameState": true
+      },
+      "teams": {
+        "home": {
+          "team": {
+            "id": true
+          },
+          "leagueRecord": {
+            "wins": true,
+            "losses": true
+          }
+        },
+        "away": {
+          "team": {
+            "id": true
+          },
+          "leagueRecord": {
+            "wins": true,
+            "losses": true
+          }
+        }
+      }
+    }
+  ]
+}
+
+{
+  "gamePk": 634543,
+  "gameType": "R",
+  "gameDate": "2021-04-17T23:05:00Z",
+  "status": {
+    "abstractGameState": "Live"
+  },
+  "teams": {
+    "away": {
+      "leagueRecord": {
+        "wins": 6,
+        "losses": 8
+      },
+      "team": {
+        "id": 110
+      }
+    },
+    "home": {
+      "leagueRecord": {
+        "wins": 6,
+        "losses": 8
+      },
+      "team": {
+        "id": 140
+      }
+    }
+  }
+}

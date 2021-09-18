@@ -1,0 +1,114 @@
+URL
+
+Query URL: http://statsapi.mlb.com/api/v1.1/game/634543/feed/live
+
+Filter
+
+{
+  "gamePk": true,
+  "gameData": {
+    "status": {
+      "abstractGameState": true
+    }
+  },
+  "liveData": {
+    "linescore": {
+      "currentInning": true,
+      "currentInningOrdinal": true,
+      "isTopInning": true,
+      "teams": {
+        "home": {
+          "runs": true
+        },
+        "away": {
+          "runs": true
+        }
+      },
+      "offense": true,
+      "outs": true
+    },
+    "boxscore": {
+      "teams": {
+        "home": {
+          "team": {
+            "id": true
+          }
+        },
+        "away": {
+          "team": {
+            "id": true
+          }
+        }
+      }
+    }
+  }
+}
+
+Example filtered data
+
+{
+  "gamePk": 634543,
+  "gameData": {
+    "status": {
+      "abstractGameState": "Live"
+    }
+  },
+  "liveData": {
+    "linescore": {
+      "currentInning": 6,
+      "currentInningOrdinal": "6th",
+      "isTopInning": true,
+      "teams": {
+        "home": {
+          "runs": 1
+        },
+        "away": {
+          "runs": 0
+        }
+      },
+      "offense": {
+        "batter": {
+          "id": 623993,
+          "fullName": "Anthony Santander",
+          "link": "/api/v1/people/623993"
+        },
+        "onDeck": {
+          "id": 621466,
+          "fullName": "DJ Stewart",
+          "link": "/api/v1/people/621466"
+        },
+        "inHole": {
+          "id": 596748,
+          "fullName": "Maikel Franco",
+          "link": "/api/v1/people/596748"
+        },
+        "pitcher": {
+          "id": 453281,
+          "fullName": "Wade LeBlanc",
+          "link": "/api/v1/people/453281"
+        },
+        "battingOrder": 2,
+        "team": {
+          "id": 110,
+          "name": "Baltimore Orioles",
+          "link": "/api/v1/teams/110"
+        }
+      },
+      "outs": 0
+    },
+    "boxscore": {
+      "teams": {
+        "away": {
+          "team": {
+            "id": 110
+          }
+        },
+        "home": {
+          "team": {
+            "id": 140
+          }
+        }
+      }
+    }
+  }
+}

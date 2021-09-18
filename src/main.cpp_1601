@@ -1,0 +1,1675 @@
+/*             Date       author  Ver   Description
+*  Version:    2019-01-22 gpmaxx  1000  NHL initial
+*              2019-03-05 gpmaxx        mlb/nhl version
+               2019-03-10 gpmaxx        OTA updating version
+            
+               why didn't you track the changes properly?
+
+               2021-03-31 gpmaxx  1600  Fixing various bugs  ver: 1600 
+                                          - getnextgame bug
+                                          - update time use ntp rather than worldtimeapi
+                                          - switched queries to use HTTPClient
+                                          - switch to use LittleFS
+                                          - other minor fixes
+               2021-04-03 gpmaxx  1601  Fixed buttonInterrupt bug 
+
+*  Desc:       NHL/MLB Scoreboard for Wemos D1 Mini and 128 & 160 TFT_eSPI
+*
+*  Libraries:  ArduinoJson:  https://github.com/bblanchon/ArduinoJson
+*              TFT_eSPI:     https://github.com/Bodmer/TFT_eSPI
+*              Bounce2:      https://github.com/thomasfredericks/Bounce2
+*
+*  Notes:      Pin assignments below are very particular. The D1 is finicky.
+*              Changing pin assignments or adding additional connections is likely
+*              to cause headaches.  The TFT_eSPI defaults are thus overridden
+*              with compile options (see platformio.ini) to use the pins that are
+*              most convienient. Using any other board beside there Wemos D1 Mini has never been tested.
+*
+*              Wemos D1 pin       connect to
+*              ------------       ----------
+*              RST                optionaly to GND via a button (external reset)
+*              A0,D8,TX,RX,5V     nothing
+*              D0                 TFT AO
+*              D5                 TFT SCK
+*              D6                 GND via Switch 1 (used for display mode)
+*              D7                 TFT SDA
+*              3V                 TFT VCC
+*              D1                 GND via button (select button)
+*              D2                 TFT CS
+*              D3                 TFT RST
+*              D4                 TFT LED
+*              G                  Ground
+*
+*              Code assume 128 x 160 TFT display. The graphics functions assume
+*              this size and use some hardcoded and magic values to get things
+*              looking right. A different size screen the values will have to
+*              be changed carefully.
+*  ToDo:
+                - full testing
+                - do memory leak tests
+
+               - look into implement NBA*              
+               - better documentation
+
+               - more testing of error scenarios
+*              - more testing of all game scenarios
+*              - testing during playoffs
+               - test near end of season
+               - test MLB double headers
+               
+*
+*   Maybe:     - secure and/or signed OTA updates
+               - figure out series record for mlb games - no API options?
+               - clean up use of global variables
+*              - make graphics dynamic for display screens other than 128 x 160
+*              - Add boxscore feature
+*                  - the available NHL json is massive and goal scoring summary is not easily available
+*                      - need better API for boxscore
+*              - Figure out how to list playoff series record - not available in NHL API?
+*/
+
+#include <Arduino.h>
+#include <TFT_eSPI.h>
+#include <Bounce2.h>
+#include <Time.h>
+#include <Timezone.h>
+#include <LittleFS.h>
+#include <WiFiManager.h>
+#define ARDUINOJSON_USE_LONG_LONG 1
+#include <ArduinoJson.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266httpUpdate.h>
+#include <TZ.h>
+
+#define SIMPLEDEBUG_SERIAL Serial
+#include "SimpleDebug.h"
+
+#include "BMP_functions.h"
+
+////////////////// Global Constants //////////////////
+// !!!!! Change version for each build !!!!!
+const uint16_t CURRENT_FW_VERSION = 1601;
+
+const char* WIFI_CONFIG_AP = "ESP_WIFI_CONFIG";
+
+const uint8_t SWITCH_PIN_1 = D6;          // change with caution
+const uint8_t LED_BACKLIGHT_PIN = D4;     // change with caution
+const uint8_t SELECT_BUTTON_PIN = D1;     // change with caution
+
+const uint8_t DEBOUNCE_INTERVAL = 25;
+const uint16_t LONG_PRESS_THRESHOLD = 1000;
+const uint8_t TFT_ROTATION = 3;
+
+const char* TEAMS_DATAFILE = "/myteam.dat";
+const uint32_t TIME_UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 24; // 24 hours
+const char* NTP_SERVER = "pool.ntp.org";
+const uint16_t NTP_WAIT = 500;
+// See https://github.com/esp8266/Arduino/blob/master/cores/esp8266/TZ.h
+#define MY_TZ TZ_America_Toronto
+ 
+const uint16_t TFT_HALF_WIDTH = 80;
+const uint16_t TFT_HALF_HEIGHT = 64;
+
+const uint32_t SECONDS_IN_A_DAY = 60 * 60 * 24;
+const uint32_t SECONDS_IN_A_WEEK = SECONDS_IN_A_DAY * 7;
+const char* HTTP_END_OF_HEADER = "\r\n\r\n";
+
+const char* NHL_HOST = "statsapi.web.nhl.com";
+const uint16_t NHL_PORT = 80;
+const uint8_t NHL_NUMTEAM_ICONS = 32;
+
+const char* MLB_HOST = "statsapi.mlb.com";
+const uint16_t MLB_PORT = 80;
+const uint8_t MLB_NUMTEAM_ICONS = 31;
+
+const uint16_t SPORTID_MARKER = 9999;
+
+// Game status codes. These are dependant on the statsapi
+// NHL uses numbers and MLB uses characters
+const char* STATUSCODE_PREGAME = "Preview";
+const char* STATUSCODE_LIVE = "Live";
+const char* STATUSCODE_FINAL = "Final";
+
+const uint32_t AFTER_GAME_RESULTS_DURATION_MS = 60 * 60 * 1 * 1000; // 1 hours
+const uint32_t GAME_UPDATE_INTERVAL = 65;  // 65 seconds
+const uint32_t MAX_SLEEP_INTERVAL_S = 60 * 60; // 1 hour
+
+const char* FW_URL = "https://www.lipscomb.ca/IOT/firmware/";
+const char* FW_HOST = "lipscomb.ca";
+const char* PROJECT_NAME = "TFT_SportsScores/";
+const char* FW_VERSION_FILENAME = "firmware_ver.txt";
+const char* CFG_VERSION_FILENAME = "fs_ver.txt";
+const char* FW_PREFIX = "firmware_";
+const char* CFG_PREFIX = "littlefs_";
+const char* FW_EXT = ".bin";
+const char* CFG_EXT = ".bin";
+
+const uint8_t TFT_BUFFER_SIZE = 80;
+
+
+////////////////// Data Structs ///////////
+struct TeamInfo {
+  uint16_t id = 0;
+  char name[4] = "XXX";
+};
+
+struct NextGameData {
+  uint8_t awayID = 0;
+  uint8_t homeID = 0;
+  uint32_t gameID = 0;
+  char homeRecord[9];   // xx-xx-xx
+  char awayRecord[9];
+  bool isPlayoffs = false;
+  time_t startTime = 0;
+  bool isNHL = true;
+};
+
+struct CurrentGameData {
+  uint32_t gameID = 0;
+  uint8_t awayID = 0;
+  uint8_t homeID = 0;
+  uint8_t awayScore = 0;
+  uint8_t homeScore = 0;
+  char period[5];    // 1st, 2nd etc
+  char timeRemaining[6];  // 12:34
+  bool isNHL = true;
+  bool bases[3];
+  uint8_t outs = 0;
+};
+
+enum GameStatus {BOOT,SCHEDULED,STARTED,FINISHED,BUTTON_WAIT};
+
+///////////// Global Variables ////////////
+String payload;
+uint16_t myNHLTeamID = 24;   // Aniheim         // default - will be overridden by config file data
+uint16_t myMLBTeamID = 109;  // Arizona      // default - will be overridden by config file data
+
+char timeString[16 + 1];    // date buffer format: YYYY/MM/DD HH:mm 
+bool currentSportIsNHL = true;
+bool otaSelected = false;
+
+/////////// Global Object Variables //////////
+TFT_eSPI tft = TFT_eSPI();
+TeamInfo nhlTeams[NHL_NUMTEAM_ICONS];
+TeamInfo mlbTeams[MLB_NUMTEAM_ICONS];
+Bounce debouncer = Bounce();
+WiFiManager wifiManager;
+NextGameData nextGameData;
+CurrentGameData currentGameData;
+GameStatus gameStatus = BOOT;
+
+////////////////  Code //////////////////////
+
+void tftMessage(const __FlashStringHelper *format, ...) {
+  static char buffer[TFT_BUFFER_SIZE + 1];
+  memset(buffer,sizeof(buffer),'\0');
+  va_list ap;
+  va_start(ap,format);
+  vsnprintf(buffer,sizeof(buffer), (const char*) format, ap);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_WHITE);
+  tft.setCursor(0,0);  
+  tft.print(buffer);
+  va_end(ap);
+}
+
+void infiniteLoop() {
+  dPrintf(F("infinite delay"));
+  while (true) {
+    delay(0xFFFFFFFF);
+  }
+}
+
+void permanentError(const __FlashStringHelper *format, ...) {
+  static char buffer[80 + 1];
+  memset(buffer,sizeof(buffer),'\0');
+  va_list ap;
+  va_start(ap,format);
+  vsnprintf(buffer,sizeof(buffer), (const char*) format, ap);
+  tftMessage(format,ap);
+  dPrintf(F("Permanent Error!!!: %s\n"),buffer);
+  va_end(ap);
+  delay(5000);
+  ESP.restart();
+
+}
+
+
+// populate teams list
+void teamListInit_NHL() {
+  nhlTeams[0].id = 24;
+  strncpy(nhlTeams[0].name,"ANA",3);
+  nhlTeams[1].id = 53;
+  strncpy(nhlTeams[1].name,"ARI",3);
+  nhlTeams[2].id = 6;
+  strncpy(nhlTeams[2].name,"BOS",3);
+  nhlTeams[3].id = 7;
+  strncpy(nhlTeams[3].name,"BUF",3);
+  nhlTeams[4].id = 12;
+  strncpy(nhlTeams[4].name,"CAR",3);
+  nhlTeams[5].id = 29;
+  strncpy(nhlTeams[5].name,"CBJ",3);
+  nhlTeams[6].id = 20;
+  strncpy(nhlTeams[6].name,"CGY",3);
+  nhlTeams[7].id = 16;
+  strncpy(nhlTeams[7].name,"CHI",3);
+  nhlTeams[8].id = 21;
+  strncpy(nhlTeams[8].name,"COL",3);
+  nhlTeams[9].id = 25;
+  strncpy(nhlTeams[9].name,"DAL",3);
+  nhlTeams[10].id = 17;
+  strncpy(nhlTeams[10].name,"DET",3);
+  nhlTeams[11].id = 22;
+  strncpy(nhlTeams[11].name,"EDM",3);
+  nhlTeams[12].id = 13;
+  strncpy(nhlTeams[12].name,"FLA",3);
+  nhlTeams[13].id = 26;
+  strncpy(nhlTeams[13].name,"LAK",3);
+  nhlTeams[14].id = 30;
+  strncpy(nhlTeams[14].name,"MIN",3);
+  nhlTeams[15].id = 8;
+  strncpy(nhlTeams[15].name,"MTL",3);
+  nhlTeams[16].id = 1;
+  strncpy(nhlTeams[16].name,"NJD",3);
+  nhlTeams[17].id = 18;
+  strncpy(nhlTeams[17].name,"NSH",3);
+  nhlTeams[18].id = 2;
+  strncpy(nhlTeams[18].name,"NYI",3);
+  nhlTeams[19].id = 3;
+  strncpy(nhlTeams[19].name,"NYR",3);
+  nhlTeams[20].id = 9;
+  strncpy(nhlTeams[20].name,"OTT",3);
+  nhlTeams[21].id = 4;
+  strncpy(nhlTeams[21].name,"PHI",3);
+  nhlTeams[22].id = 5;
+  strncpy(nhlTeams[22].name,"PIT",3);
+  nhlTeams[23].id = 28;
+  strncpy(nhlTeams[23].name,"SJS",3);
+  nhlTeams[24].id = 19;
+  strncpy(nhlTeams[24].name,"STL",3);
+  nhlTeams[25].id = 14;
+  strncpy(nhlTeams[25].name,"TBL",3);
+  nhlTeams[26].id = 10;
+  strncpy(nhlTeams[26].name,"TOR",3);
+  nhlTeams[27].id = 23;
+  strncpy(nhlTeams[27].name,"VAN",3);
+  nhlTeams[28].id = 54;
+  strncpy(nhlTeams[28].name,"VGK",3);
+  nhlTeams[29].id = 52;
+  strncpy(nhlTeams[29].name,"WPG",3);
+  nhlTeams[30].id = 15;
+  strncpy(nhlTeams[30].name,"WSH",3);
+  nhlTeams[31].id = SPORTID_MARKER;
+  strncpy(nhlTeams[31].name,"MLB",3);
+}
+
+// populate teams list
+void teamListInit_MLB() {
+  mlbTeams[0].id = 109;
+  strncpy(mlbTeams[0].name,"ARI",3);
+  mlbTeams[1].id = 144;
+  strncpy(mlbTeams[1].name,"ATL",3);
+  mlbTeams[2].id = 110;
+  strncpy(mlbTeams[2].name,"BAL",3);
+  mlbTeams[3].id = 111;
+  strncpy(mlbTeams[3].name,"BOS",3);
+  mlbTeams[4].id = 112;
+  strncpy(mlbTeams[4].name,"CHC",3);
+  mlbTeams[5].id = 145;
+  strncpy(mlbTeams[5].name,"CWS",3);
+  mlbTeams[6].id = 113;
+  strncpy(mlbTeams[6].name,"CIN",3);
+  mlbTeams[7].id = 114;
+  strncpy(mlbTeams[7].name,"CLE",3);
+  mlbTeams[8].id = 115;
+  strncpy(mlbTeams[8].name,"COL",3);
+  mlbTeams[9].id = 116;
+  strncpy(mlbTeams[9].name,"DET",3);
+  mlbTeams[10].id = 117;
+  strncpy(mlbTeams[10].name,"HOU",3);
+  mlbTeams[11].id = 118;
+  strncpy(mlbTeams[11].name,"KCR",3);
+  mlbTeams[12].id = 108;
+  strncpy(mlbTeams[12].name,"LAA",3);
+  mlbTeams[13].id = 119;
+  strncpy(mlbTeams[13].name,"LAD",3);
+  mlbTeams[14].id = 146;
+  strncpy(mlbTeams[14].name,"MIA",3);
+  mlbTeams[15].id = 158;
+  strncpy(mlbTeams[15].name,"MIL",3);
+  mlbTeams[16].id = 142;
+  strncpy(mlbTeams[16].name,"MIN",3);
+  mlbTeams[17].id = 121;
+  strncpy(mlbTeams[17].name,"NYM",3);
+  mlbTeams[18].id = 147;
+  strncpy(mlbTeams[18].name,"NYY",3);
+  mlbTeams[19].id = 133;
+  strncpy(mlbTeams[19].name,"OAK",3);
+  mlbTeams[20].id = 143;
+  strncpy(mlbTeams[20].name,"PHI",3);
+  mlbTeams[21].id = 134;
+  strncpy(mlbTeams[21].name,"PIT",3);
+  mlbTeams[22].id = 135;
+  strncpy(mlbTeams[22].name,"SDP",3);
+  mlbTeams[23].id = 137;
+  strncpy(mlbTeams[23].name,"SFG",3);
+  mlbTeams[24].id = 136;
+  strncpy(mlbTeams[24].name,"SEA",3);
+  mlbTeams[25].id = 138;
+  strncpy(mlbTeams[25].name,"STL",3);
+  mlbTeams[26].id = 139;
+  strncpy(mlbTeams[26].name,"TBR",3);
+  mlbTeams[27].id = 140;
+  strncpy(mlbTeams[27].name,"TEX",3);
+  mlbTeams[28].id = 141;
+  strncpy(mlbTeams[28].name,"TOR",3);
+  mlbTeams[29].id = 120;
+  strncpy(mlbTeams[29].name,"WSH",3);
+  mlbTeams[30].id = SPORTID_MARKER;
+  strncpy(mlbTeams[30].name,"NHL",3);
+}
+
+void teamListInit() {
+  teamListInit_NHL();
+  teamListInit_MLB();
+}
+
+
+
+char* getTeamAbbreviation(const uint16_t teamID, const bool isNHLTeam) {
+
+  if (isNHLTeam) {
+    for (uint8_t i = 0; i < NHL_NUMTEAM_ICONS; i++) {
+      if (nhlTeams[i].id == teamID) {
+        return nhlTeams[i].name;
+      }
+    }
+  }
+  else {
+    for (uint8_t i = 0; i < MLB_NUMTEAM_ICONS; i++) {
+      if (mlbTeams[i].id == teamID) {
+        return mlbTeams[i].name;
+      }
+    }
+  }
+
+  return "ERR";
+}
+
+void displaySingleLogo(const uint16_t teamID, const bool isNHL) {
+
+  char filePath[19];
+  char* sportPath;
+
+  if (isNHL) {
+    sportPath = "NHL/";
+  }
+  else {
+    sportPath = "MLB/";
+  }
+
+  char* teamName = getTeamAbbreviation(teamID,isNHL);
+  sprintf(filePath,"%s%s%s%s","/icons/",sportPath,teamName,".bmp");
+
+  drawBmp(&tft,filePath,TFT_HALF_WIDTH-25,TFT_HALF_HEIGHT-25);
+}
+
+void displayTeamLogos(const uint8_t awayID, const uint8_t homeID, const bool isNHL) {
+
+  char filePath[19];
+  char* sportPath;
+
+  if (isNHL) {
+    sportPath = "NHL/";
+  }
+  else {
+    sportPath = "MLB/";
+  }
+
+  sprintf(filePath,"%s%s%s%s","/icons/",sportPath,getTeamAbbreviation(awayID,isNHL),".bmp");
+  drawBmp(&tft,filePath,10,10);
+
+  sprintf(filePath,"%s%s%s%s","/icons/",sportPath,getTeamAbbreviation(homeID,isNHL),".bmp");
+  drawBmp(&tft,filePath,100,10);
+
+}
+
+
+uint16_t selectMLBTeam() {
+
+  uint8_t teamIndex = 0;
+  bool teamSelected = false;
+  bool switchTeams = true;
+  uint32_t buttonTimer = 0;
+  bool alreadyFell = false;
+
+  // get our current team's index
+  for (uint8_t i = 0; i < MLB_NUMTEAM_ICONS; i++) {
+    if (mlbTeams[i].id == myMLBTeamID) {
+      teamIndex = i;
+      break;
+    }
+  }
+
+  tft.fillScreen(TFT_WHITE);
+  while (!teamSelected) {
+    if (switchTeams) {
+      displaySingleLogo(mlbTeams[teamIndex].id,false);
+      switchTeams = false;
+    }
+    debouncer.update();
+    if (debouncer.fell()) {
+      buttonTimer = millis();
+      alreadyFell = true;
+    }
+    if (debouncer.rose() && alreadyFell) {
+      if ((millis() - buttonTimer) > LONG_PRESS_THRESHOLD) {
+        return mlbTeams[teamIndex].id;
+      }
+      else {
+        switchTeams = true;
+        teamIndex = (teamIndex + 1) % MLB_NUMTEAM_ICONS;
+      }
+    }
+    yield();
+  }
+}
+
+uint16_t selectNHLTeam() {
+
+  uint8_t teamIndex = 0;
+  bool teamSelected = false;
+  bool switchTeams = true;
+  uint32_t buttonTimer = 0;
+  bool alreadyFell = false;
+
+  // get our current team's index
+  for (uint8_t i = 0; i < NHL_NUMTEAM_ICONS; i++) {
+    if (nhlTeams[i].id == myNHLTeamID) {
+      teamIndex = i;
+      break;
+    }
+  }
+
+  tft.fillScreen(TFT_WHITE);
+  while (!teamSelected) {
+    if (switchTeams) {
+      displaySingleLogo(nhlTeams[teamIndex].id,true);
+      switchTeams = false;
+    }
+    debouncer.update();
+    if (debouncer.fell()) {
+      buttonTimer = millis();
+      alreadyFell = true;
+    }
+    if (debouncer.rose() && alreadyFell) {
+      if ((millis() - buttonTimer) > LONG_PRESS_THRESHOLD) {
+        return nhlTeams[teamIndex].id;
+      }
+      else {
+        switchTeams = true;
+        teamIndex = (teamIndex + 1) % NHL_NUMTEAM_ICONS;
+      }
+    }
+    yield();
+  }
+}
+
+void selectMenu() {
+
+  uint16_t selectedTeamID = 0;
+
+  while (true) {
+
+    if (currentSportIsNHL) {
+        selectedTeamID = selectNHLTeam();
+        if (selectedTeamID == SPORTID_MARKER) {
+          currentSportIsNHL = false;
+        }
+        else {
+          myNHLTeamID = selectedTeamID;
+          break;
+        }
+    }
+    else {
+      selectedTeamID = selectMLBTeam();
+      if (selectedTeamID == SPORTID_MARKER) {
+        currentSportIsNHL = true;
+      }
+      else {
+          myMLBTeamID = selectedTeamID;
+          break;
+      }
+    }
+
+  }
+
+}
+
+
+
+
+
+// output out favourite team to config file
+void saveTeams() {
+  fs::File file = LittleFS.open(TEAMS_DATAFILE,"w");
+  if (file) {
+    file.println(myNHLTeamID);
+    file.println(myMLBTeamID);
+    file.println(currentSportIsNHL);
+  }
+  else {
+    dPrintf(F("Error opening myTeam file for writing\n"));
+  }
+ 
+  file.close();
+}
+
+void selectTeam() {
+  selectMenu();
+  saveTeams();
+}
+
+
+bool loadTeams() {
+
+  bool success = false;
+
+  fs::File file = LittleFS.open(TEAMS_DATAFILE,"r");
+
+  if (file) {
+    tftMessage(F("Loading teams..."));
+    myNHLTeamID = file.parseInt();
+
+    char* teamName = getTeamAbbreviation(myNHLTeamID,true);
+    if (strcmp(teamName,"ERR") != 0) {
+      dPrintf(F("NHL Team: %s (%d)\r\n"),teamName,myNHLTeamID);
+
+      myMLBTeamID = file.parseInt();
+      teamName = getTeamAbbreviation(myMLBTeamID,false);
+      if (strcmp(teamName,"ERR") != 0) {
+        dPrintf(F("MLB Team: %s (%d)\n"),teamName,myMLBTeamID);
+        currentSportIsNHL = (bool)file.parseInt();
+        dPrintf(F("Display mode: %s\r\n"),(currentSportIsNHL) ? "NHL" : "MLB");
+        success = true;
+      }
+      else {
+        dPrintf(F("Error MLB team not found: %d\n"),myMLBTeamID);
+      }
+    }
+    else {
+      dPrintf(F("Error NHL team not found: %d\n"),myNHLTeamID);
+    }
+  }
+  else {
+    dPrintf(F("Failed to open teams file: %s\n"),TEAMS_DATAFILE);
+  }
+    
+  file.close();
+
+  return success;
+
+}
+
+// String of the time expected in format YYYY-MM-DD HH-mm-ss GMT
+time_t parseDateTime(const String& timeStr) {
+
+  tmElements_t tmSet;
+  tmSet.Year = timeStr.substring(0,4).toInt() - 1970;
+  tmSet.Month = timeStr.substring(5,7).toInt();
+  tmSet.Day = timeStr.substring(8,10).toInt();
+  tmSet.Hour = timeStr.substring(11,13).toInt();
+  tmSet.Minute = timeStr.substring(14,16).toInt();
+  tmSet.Second = timeStr.substring(17,19).toInt();
+  
+  return makeTime(tmSet);
+
+}
+
+// convert epoch time to YYYY-MM-DD format
+String convertDate(const time_t epoch) {
+  char dateChar[11] = {'\0'};
+
+  snprintf(dateChar,sizeof(dateChar),"%04d-%02d-%02d",year(epoch),month(epoch),day(epoch));
+  String dateString = dateChar;
+  return dateString;
+}
+
+void printDate(const time_t theTime) {
+  dPrintf(F("%s\n"),convertDate(theTime).c_str());
+}
+
+void printTime(const time_t theTime) {
+  dPrintf(F("%02d:%02d:%02d\n"),hour(theTime),minute(theTime),second(theTime));
+}
+
+time_t currentTime() {
+  static time_t theTime = 0;
+  time(&theTime);
+  return theTime;
+}
+
+void printDate() {
+  printDate(currentTime());
+}
+
+void printTime() {
+  printTime(currentTime());
+}
+
+void updateTime() {
+  static uint32_t lastTimeUpdate = 0;
+  static time_t theTime = 0;
+  if ((lastTimeUpdate == 0) || ((millis() - lastTimeUpdate) > TIME_UPDATE_INTERVAL_MS)) {
+    tftMessage(F("Fetching time..."));
+    dPrintf(F("Fetching time please wait\n"));
+    lastTimeUpdate = millis();
+    configTime(MY_TZ,NTP_SERVER);
+
+    while (theTime < 1500000000) {
+      delay(NTP_WAIT);
+      theTime = time(nullptr);
+      time(&theTime);
+    }
+    dPrintf(F("Time update took: %d\n"),millis()-lastTimeUpdate);
+    dPrintf(F("Epoch time: %d\n"),theTime);
+
+    char buffer[20];
+    
+    strftime(buffer,sizeof(buffer),"%Y/%m/%d %H:%M:%S",gmtime(&theTime));
+    dPrintf(F("Epoch time: %s\n"),buffer);
+    strftime(buffer,sizeof(buffer),"%Y/%m/%d %H:%M:%S",localtime(&theTime));
+    dPrintf(F("Local time: %s\n"),buffer);
+
+  }
+}
+
+
+void wifiConfigCallback(WiFiManager* myWiFiManager) {
+  dPrint(F("Entered WiFi Config Mode\n"));
+  dPrintf(F("%03d.%03d.%03d.%03d\n"),WiFi.softAPIP()[0],WiFi.softAPIP()[1],WiFi.softAPIP()[2],WiFi.softAPIP()[3]);
+  dPrintf(F("%s\n"),myWiFiManager->getConfigPortalSSID().c_str());
+  tftMessage(F("%s"),myWiFiManager->getConfigPortalSSID().c_str());
+}
+
+void wifiConnect() {
+  dPrintf(F("Connecting to WiFi...\n"));
+  if (!wifiManager.autoConnect(WIFI_CONFIG_AP)) {
+    dPrintf(F("failed to connect timout\n"));
+    tftMessage(F("WiFi connect timeout"));
+    delay(10000);
+    ESP.reset();
+    delay(10000);
+  }
+
+  dPrintf(F("WiFi Connected\n"));
+
+}
+
+void printNextGame(NextGameData* nextGame) {
+
+
+
+  dPrintf(F("-----------------\n"));
+  dPrintf(F("GameID: %d (%s)\n"),nextGame->gameID,(nextGame->isNHL) ? "NHL" : "MLB");
+
+  dPrintf(F("awayID: %d (%s)\n"),nextGame->awayID,getTeamAbbreviation(nextGame->awayID,nextGame->isNHL));
+  dPrintf(F("homeID: %d (%s)\n"),nextGame->homeID,getTeamAbbreviation(nextGame->homeID,nextGame->isNHL));
+  dPrintf(F("StartTime: %d\n"),nextGame->startTime);
+  strftime(timeString,sizeof(timeString),"%Y/%m/%d %H:%M",gmtime(&(nextGame->startTime)));
+  dPrintf(F("StartTime GMT: %s\n"),timeString);
+  strftime(timeString,sizeof(timeString),"%Y/%m/%d %H:%M",localtime(&(nextGame->startTime)));
+  dPrintf(F("StartTime Local: %s\n"),timeString);
+  dPrintf(F("Away Record: %s\n"),nextGame->awayRecord);
+  dPrintf(F("Home Record: %s\n"),nextGame->homeRecord);
+  dPrintf(F("Is Playoffs: %s\n"),(nextGame->isPlayoffs ? "Yes" : "No"));
+  dPrintf(F("-----------------\n"));
+}
+
+void printCurrentGame (CurrentGameData* currentGame) {
+  dPrintf(F("-----------------\n"));
+  dPrintf(F("GameID: %d (%s)\n"),currentGame->gameID,(currentGame->isNHL) ? "NHL" : "MLB");
+  dPrintf(F("awayID: %d (%s)\n"),currentGame->awayID,getTeamAbbreviation(currentGame->awayID,currentGame->isNHL));
+  dPrintf(F("homeID: %d (%s)\n"),currentGame->homeID,getTeamAbbreviation(currentGame->homeID,currentGame->isNHL));
+  dPrintf(F("Away score: %d\n"),currentGame->awayScore);
+  dPrintf(F("Home score: %d\n"),currentGame->homeScore);
+  dPrintf(F("%s %s\n"),(currentGame->isNHL) ? "Period:" : "Inning:", currentGame->period);
+  dPrintf(F("%s %s\n"),(currentGame->isNHL) ? "Time:" : "Inning:", currentGame->timeRemaining);
+  if (!currentGame->isNHL) {
+    dPrintf(F("Outs: %d\n"),currentGame->outs);
+    dPrintf(F("Bases:\n"));
+    dPrintf(F(" Running on 1st: %s\n"),(currentGame->bases[0]) ? "yes" : "no");
+    dPrintf(F(" Running on 2nd: %s\n"),(currentGame->bases[1]) ? "yes" : "no");
+    dPrintf(F(" Running on 3rd: %s\n"),(currentGame->bases[2]) ? "yes" : "no");
+  }
+  dPrintf(F("-----------------\n"));
+}
+
+void extractNextGame(NextGameData* nextGameData, JsonObject& game,const bool isNHLGame) {
+
+  nextGameData->gameID = game["gamePk"];
+  nextGameData->awayID = game["teams"]["away"]["team"]["id"];
+  nextGameData->homeID = game["teams"]["home"]["team"]["id"];
+  nextGameData->isNHL = isNHLGame;
+  const char* gameType = game["gameType"];
+  nextGameData->isPlayoffs = (strcmp(gameType,"P") == 0);
+  String nextGameTS_str = game["gameDate"];
+  nextGameData->startTime = parseDateTime(nextGameTS_str);
+  JsonObject homeRecord = game["teams"]["home"]["leagueRecord"];
+  JsonObject awayRecord = game["teams"]["away"]["leagueRecord"];
+  uint8_t homeWins = homeRecord["wins"];
+  uint8_t awayWins = awayRecord["wins"];
+  uint8_t homeLosses = homeRecord["losses"];
+  uint8_t awayLosses = awayRecord["losses"];
+  if (isNHLGame) {
+    uint8_t homeOT = homeRecord["ot"];
+    uint8_t awayOT = awayRecord["ot"];
+    sprintf(nextGameData->homeRecord,"%d-%d-%d",homeWins,homeLosses,homeOT);
+    sprintf(nextGameData->awayRecord,"%d-%d-%d",awayWins,awayLosses,awayOT);
+  }
+  else {
+      sprintf(nextGameData->homeRecord,"%d-%d",homeWins,homeLosses);
+      sprintf(nextGameData->awayRecord,"%d-%d",awayWins,awayLosses);
+  }
+}
+
+void getNextGame(const time_t today,const uint16_t teamID, const bool isNHLGame, NextGameData* nextGameData) {
+
+  String queryString;
+  HTTPClient httpclient;
+  int8_t gameCount = 0;
+  uint32_t excludeGameID = nextGameData->gameID;
+
+  nextGameData->gameID = 0;
+
+  char* host;
+  uint16_t port;
+
+  if (isNHLGame) {
+    host = (char*)NHL_HOST;
+    port = NHL_PORT;
+  }
+  else {
+    host = (char*)MLB_HOST;
+    port = MLB_PORT;
+  }
+
+  dPrintf(F("Query - Type: Next %s Game\n"), isNHLGame ? "NHL" : "MLB");
+
+  queryString = "http://";
+  queryString += host;
+  queryString += "/api/v1/schedule?";
+  queryString += "sportId=1";
+  queryString += "&teamId=";
+  queryString += teamID;
+  queryString += "&startDate=";
+  queryString += convertDate(today - SECONDS_IN_A_DAY); // need to grab from yesterday
+  queryString += "&endDate=";
+  // get 7 days worth of data to in order to cover the all star break and playoff gaps4
+  queryString += convertDate(today + (SECONDS_IN_A_DAY * 3));
+  
+
+  httpclient.end();
+
+  dPrintf(F("Query URL: %s\n"),queryString.c_str());
+  
+  httpclient.begin(queryString);
+
+  int httpResult = httpclient.GET();
+  if (httpResult != 200) {
+    dPrintf(F("HTTP error: %d\n"),httpResult);
+    payload = httpclient.getString();
+    httpclient.end();
+    return;
+  }
+
+  payload = httpclient.getString();
+  httpclient.end();
+
+  dPrintln(F("------------------------------\n"));
+  dPrintln(payload.c_str());
+  dPrintln(F("------------------------------\n"));
+
+  DynamicJsonDocument doc(16384);
+  dPrintf(F("Doc size: %d\n"),doc.size());
+  
+  DeserializationError err = deserializeJson(doc,payload);
+
+  if (err) {
+    permanentError(F("%s\n"),err.c_str());
+    return;
+  }
+
+  int totalGames = doc["totalGames"];
+  if (totalGames <= 0) {
+    dPrint(F("No game data found\n"));
+    return;    
+  }
+   
+  JsonArray dates = doc["dates"];
+  for (JsonObject date : dates) {
+    JsonArray games = date["games"];
+    for (JsonObject game : games) {
+      uint32_t gameID = game["gamePk"];
+      const char* gameStatus = game["status"]["abstractGameState"];
+      if ((strcmp(gameStatus,STATUSCODE_FINAL) != 0) && (gameID != excludeGameID)) {
+        extractNextGame(nextGameData,game,isNHLGame);
+        return;
+      }
+      else if (gameCount == 2) {
+        return;
+      }
+      gameCount++;
+    }
+  }
+ 
+      
+  
+}
+
+bool switchOneValue() {
+  return digitalRead(SWITCH_PIN_1);
+}
+
+void getNextGame() {
+  getNextGame(currentTime(),(currentSportIsNHL ? myNHLTeamID : myMLBTeamID ),currentSportIsNHL,&nextGameData);
+  printNextGame(&nextGameData);
+}
+
+// action
+// 1 = turn on
+// 0 = turn off
+// -1 = toggle
+void tftSet(int8_t action) {
+  static bool ledState = false;
+
+  if (action == -1) {
+    ledState = !ledState;
+  }
+  else {
+    ledState = action;
+  }
+  digitalWrite(LED_BACKLIGHT_PIN,ledState);
+  dPrintf(F("LED backlight: %s\n"),ledState ? "ON" : "OFF"); 
+}
+
+void displayNextGame(NextGameData* nextGameData) {
+
+  tftSet(digitalRead(SWITCH_PIN_1));
+
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK);
+
+  if (nextGameData->gameID == 0) {  // this shouldn't really happen until the end of the season
+    if (currentSportIsNHL) {
+      displaySingleLogo(myNHLTeamID,true);
+    }
+    else {
+      displaySingleLogo(myMLBTeamID,false);
+    }
+    tft.drawString("No games scheduled",(tft.width() - tft.textWidth("No games scheduled",2))/2,95,2);
+    infiniteLoop();
+  }
+  else {
+    displayTeamLogos(nextGameData->awayID,nextGameData->homeID,nextGameData->isNHL);
+
+    if (!(nextGameData->isPlayoffs)) {
+      tft.drawString(nextGameData->awayRecord,35 - (tft.textWidth(nextGameData->awayRecord)/2),65);
+      tft.drawString(nextGameData->homeRecord,125 - (tft.textWidth(nextGameData->homeRecord)/2),65);
+    }
+
+    char buffer[12];       // fit: Mon, Jan 23
+    
+    strftime(buffer,sizeof(buffer),"%a, %b %e",localtime(&(nextGameData->startTime)));
+    tft.drawString(buffer,TFT_HALF_WIDTH - (tft.textWidth(buffer,4)/2),85,4);
+
+    strftime(buffer,sizeof(buffer),"%H:%M",localtime(&(nextGameData->startTime)));
+    tft.drawString(buffer,TFT_HALF_WIDTH - (tft.textWidth(buffer,2)/2),110,2);
+    tft.drawString("VS",72,20,2);
+  }
+
+}
+
+void setGDStrings(CurrentGameData* gd, const char* period, const char* timeRemaining) {
+
+  memset(gd->period,'\0',sizeof(gd->period));
+  memset(gd->timeRemaining,'\0',sizeof(gd->timeRemaining));
+  strcpy(gd->period,period);
+  if (strcmp(period,"SO")==0) {
+    strcpy(gd->timeRemaining,"");
+  }
+  else {
+    strcpy(gd->timeRemaining,timeRemaining);
+  }
+}
+
+bool gameStatsChanged(CurrentGameData* prev, CurrentGameData* curr) {
+
+  bool result = false;
+
+  if (prev->gameID != curr->gameID) { return true; }
+  if (prev->awayID != curr->awayID) { return true; }
+  if (prev->homeID != curr->homeID) { return true; }
+  if (prev->awayScore != curr->awayScore) { return true; }
+  if (prev->homeScore != curr->homeScore) { return true; }
+  if (strcmp(prev->period,curr->period) != 0) { return true; }
+  if (strcmp(prev->timeRemaining,curr->timeRemaining) != 0) { return true; }
+  if (!curr->isNHL) {
+      if (prev->outs != curr->outs) { return true; }
+      if (prev->bases[0] != curr->bases[0]) { return true; }
+      if (prev->bases[1] != curr->bases[1]) { return true; }
+      if (prev->bases[2] != curr->bases[2]) { return true; }
+  }
+  return false;
+}
+
+void copyGameData(CurrentGameData* dest, CurrentGameData* source) {
+  dest->gameID = source->gameID;
+  dest->homeID = source->homeID;
+  dest->awayID = source->awayID;
+  dest->homeScore = source->homeScore;
+  dest->awayScore = source->awayScore;
+  strcpy(dest->period,source->period);
+  strcpy(dest->timeRemaining,source->timeRemaining);
+  dest->isNHL = source->isNHL;
+  dest->outs = source->outs;
+  dest->bases[0] = source->bases[0];
+  dest->bases[1] = source->bases[1];
+  dest->bases[2] = source->bases[2];
+}
+
+
+// i2s based sound code removed due to compile issues (on platformIO)
+// and pin availability and functionality issues
+// leaving the frame work for the sound code in place for the future
+// perhaps add flashing screen functionality instead
+void playHorn(const bool myTeamScored) {}
+
+// hackey hardcoded postion.up
+int16_t awayScorePosition(const uint8_t theScore) {
+  int16_t position = 20;
+  if (theScore == 1) {
+    position = 10;
+  }
+  else {
+    if (theScore >= 20) {
+      position = 2;
+    }
+    else if (theScore >= 10) {
+      position = -8;
+    }
+  }
+  return position;
+}
+
+// hackey hardcoded position
+int16_t homeScorePosition(const uint8_t theScore) {
+  int16_t position = 110;
+  if (theScore == 1) {
+    position = 100;
+  }
+  else {
+    if (theScore >= 20) {
+      position = 92;
+    }
+    else if (theScore >= 10) {
+      position = 82;
+    }
+  }
+  return position;
+}
+
+// hacky code that assumed TFT screen size.  Won't look right on other size screens
+void displayCurrentGame(CurrentGameData* gameData) {
+
+  char score[3];
+
+  tftSet(true);
+
+  tft.fillScreen(TFT_WHITE);
+  tft.setTextColor(TFT_BLACK);
+
+  displayTeamLogos(gameData->awayID,gameData->homeID,gameData->isNHL);
+
+  memset(score,'\0',sizeof(score));
+  snprintf(score,sizeof(score),"%d",gameData->awayScore);
+
+  tft.drawString(score,awayScorePosition(gameData->awayScore),70,7);
+  memset(score,'\0',sizeof(score));
+  snprintf(score,sizeof(score),"%d",gameData->homeScore);
+
+  tft.drawString(score,homeScorePosition(gameData->homeScore),70,7);
+
+  tft.drawString("VS",TFT_HALF_WIDTH - (tft.textWidth("VS",2)/2),30,2);
+
+  const uint8_t basePosX = 70;
+  const uint8_t basePosY = 70;
+
+  // should be basePosX but too lazy to change all the other positions
+  tft.drawString(gameData->period,basePosX+3,basePosY,2);
+  if ((gameData->isNHL) || (strcmp(gameData->timeRemaining,"FINAL") == 0))  {
+    tft.drawString(gameData->timeRemaining,TFT_HALF_WIDTH - (tft.textWidth(gameData->timeRemaining,2)/2),105,2);
+  }
+  else {
+    // 3rd base
+    if (gameData->bases[2]) {
+      tft.fillTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+25,TFT_BLACK);
+      tft.fillTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+35,TFT_BLACK);
+    }
+    else {
+      tft.drawTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+25,TFT_BLACK);
+      tft.drawTriangle(basePosX-5,basePosY+30,basePosX+5,basePosY+30,basePosX,basePosY+35,TFT_BLACK);
+      tft.drawLine(basePosX-5+1,basePosY+30,basePosX+5-1,basePosY+30,TFT_WHITE);
+    }
+
+    // 1st base
+    if (gameData->bases[0]) {
+      tft.fillTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+25,TFT_BLACK);
+      tft.fillTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+35,TFT_BLACK);
+    }
+    else {
+      tft.drawTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+25,TFT_BLACK);
+      tft.drawTriangle(basePosX+15,basePosY+30,basePosX+25,basePosY+30,basePosX+20,basePosY+35,TFT_BLACK);
+      tft.drawLine(basePosX+15+1,basePosY+30,basePosX+25-1,basePosY+30,TFT_WHITE);
+    }
+    // 2nd base
+    if (gameData->bases[1]) {
+      tft.fillTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+17,TFT_BLACK);
+      tft.fillTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+27,TFT_BLACK);
+    }
+    else {
+      tft.drawTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+17,TFT_BLACK);
+      tft.drawTriangle(basePosX+5,basePosY+22,basePosX+15,basePosY+22,basePosX+10,basePosY+27,TFT_BLACK);
+      tft.drawLine(basePosX+5+1,basePosY+22,basePosX+15-1,basePosY+22,TFT_WHITE);
+    }
+    if (strcmp(gameData->timeRemaining,"top") == 0) {
+      tft.fillTriangle(basePosX-9,basePosY+10,basePosX+1,basePosY+10,basePosX-4,basePosY+5,TFT_BLACK);
+    }
+    else {
+      tft.fillTriangle(basePosX-9,basePosY+5,basePosX+1,basePosY+5,basePosX-4,basePosY+10,TFT_BLACK);
+    }
+
+    for (uint8_t i = 1; i <= gameData->outs; i++) {
+      tft.fillCircle(basePosX-6 + (8 * i),basePosY+41,3,TFT_BLACK);
+    }
+    for (uint8_t i = gameData->outs + 1; i <= 3; i++) {
+      tft.drawCircle(basePosX-6 + (8 * i),basePosY+41,3,TFT_BLACK);
+    }
+
+  }
+
+}
+
+bool getMLBGameIsFinished(const uint32_t gameID) {
+  
+  HTTPClient httpclient;
+  String queryString;
+
+  dPrintf(F("Query - Type: Game Finished\n"));
+
+  queryString = "http://";
+  queryString += MLB_HOST;
+  queryString += "/api/v1/schedule?gamePk=";
+  queryString += gameID;
+
+  dPrintf(F("Query URL: %s\n"),queryString.c_str());
+
+  httpclient.begin(queryString);
+
+  int httpResult = httpclient.GET();
+  if (httpResult != 200) {
+    httpclient.end();
+    permanentError(F("HTTP error %d\n"),httpResult);
+    return true;
+  }
+
+  payload = httpclient.getString();
+  httpclient.end();
+
+  dPrintln(F("------------------------------\n"));
+  dPrintln(payload.c_str());
+  dPrintln(F("------------------------------\n"));
+
+  DynamicJsonDocument doc(4096);
+  DeserializationError err = deserializeJson(doc,payload);
+
+  if (err) {
+    permanentError(F("%s\n"),err.c_str());
+  }
+
+  const char* gameStatus = doc["dates"][0]["games"][0]["status"]["abstractGameState"];
+  bool result = (strcmp(gameStatus,STATUSCODE_FINAL) == 0);
+
+  return result;
+}
+
+bool getAndDisplayCurrentMLBGame(NextGameData* gameSummary, CurrentGameData* prevUpdate) {
+
+  HTTPClient httpclient;
+  String queryString;
+
+  CurrentGameData gameData;
+  bool isGameOver = false;
+
+  dPrintln(F("Query - Type: Current Game"));
+  queryString = "http://";
+  queryString += MLB_HOST;
+  queryString += "/api/v1/game/";
+  queryString += gameSummary->gameID;
+  queryString += "/linescore";
+
+  dPrintf(F("Query URL: %s\n"),queryString.c_str());
+
+  httpclient.begin(queryString);
+
+  int httpResult = httpclient.GET();
+  if (httpResult != 200) {
+    dPrintf(F("HTTP error: %d\n"),httpResult);
+    httpclient.end();
+    permanentError(F("HTTP error: %s\n"),httpResult);
+  }
+
+  payload = httpclient.getString();
+  httpclient.end();
+
+  dPrintln(F("------------------------------"));
+  dPrintln(payload.c_str());
+  dPrintln(F("------------------------------"));
+
+  DynamicJsonDocument doc(10000);
+  DeserializationError err = deserializeJson(doc,payload);
+
+  if (err) {
+    permanentError(F("%s"),err.c_str());
+  }
+
+  // the MLB linescore doesn't include the teamIDs or game status so we have to be hackey
+  // using the schedule data
+
+  gameData.gameID = gameSummary->gameID;
+  gameData.isNHL = false;
+  gameData.homeID = gameSummary->homeID;
+  gameData.awayID = gameSummary->awayID;
+  uint8_t inning = doc["currentInning"];
+  if (inning == 0) {
+    setGDStrings(&gameData,"pre","");
+  }
+  else {
+    gameData.homeScore = doc["teams"]["home"]["runs"];
+    gameData.awayScore = doc["teams"]["away"]["runs"];
+    gameData.outs = doc["outs"];
+
+    if ((inning >= 9) && (getMLBGameIsFinished(gameData.gameID))) {
+      setGDStrings(&gameData,"","FINAL");
+      isGameOver = true;
+    }
+    else {
+      const char* inningStr = doc["currentInningOrdinal"];
+      bool isTopInning = doc["isTopInning"];
+      if (isTopInning) {
+        setGDStrings(&gameData,inningStr,"top");
+      }
+      else {
+        setGDStrings(&gameData,inningStr,"bot");
+      }
+
+    }
+
+  }
+
+  JsonObject offense = doc["offense"];
+  gameData.bases[0] = offense.containsKey("first");
+  gameData.bases[1] = offense.containsKey("second");
+  gameData.bases[2] = offense.containsKey("third");
+
+  printCurrentGame(&gameData);
+
+  if (gameStatsChanged(prevUpdate,&gameData)) {
+    copyGameData(prevUpdate,&gameData);
+    displayCurrentGame(prevUpdate);
+  }
+
+  return isGameOver;
+}
+
+bool getAndDisplayCurrentNHLGame(const uint32_t gameID, CurrentGameData* prevUpdate) {
+
+  HTTPClient httpclient;
+  String queryString;
+
+  CurrentGameData gameData;
+  bool isGameOver = false;
+
+  dPrint(F("Query - Type: Current Game NHL\n"));
+
+  queryString = "http://";
+  queryString += NHL_HOST;
+  queryString += "/api/v1/game/";
+  queryString += gameID;
+  queryString += "/linescore";
+
+  dPrintf(F("Query URL: %s\n"),queryString.c_str());
+
+  httpclient.begin(queryString);
+
+  int httpResult = httpclient.GET();
+  if (httpResult != 200) {
+    dPrintf(F("HTTP error: %d\n"),httpResult);
+    httpclient.end();
+    permanentError(F("HTTP error: %d\n"),httpResult);
+  }
+
+  payload = httpclient.getString();
+  httpclient.end();
+
+  dPrintln(F("payload\n"));
+  dPrintln(F("------------------------------\n"));
+  dPrintln(payload.c_str());
+  dPrintln(F("------------------------------\n"));
+
+  DynamicJsonDocument doc(6144);
+  DeserializationError err = deserializeJson(doc,payload);
+
+  if (err) {
+    permanentError(F("%s"),err.c_str());
+  }
+
+  gameData.gameID = gameID;
+  gameData.isNHL = true;
+  gameData.homeID = doc["teams"]["home"]["team"]["id"];
+  gameData.homeScore = doc["teams"]["home"]["goals"];
+  gameData.awayID = doc["teams"]["away"]["team"]["id"];
+  gameData.awayScore = doc["teams"]["away"]["goals"];
+  uint8_t period = doc["currentPeriod"];
+
+  if (period == 0) {
+        setGDStrings(&gameData,"pre","");
+  }
+  else {
+    const char* p = doc["currentPeriodOrdinal"];   // Json template issues if declartion isn't on same line
+    const char* tr = doc["currentPeriodTimeRemaining"];
+
+    if (strcmp(tr,STATUSCODE_FINAL) == 0) {
+      setGDStrings(&gameData,"","Final");
+      isGameOver = true;
+    }
+    else {
+      setGDStrings(&gameData,p,tr);
+    }
+  }
+
+  printCurrentGame(&gameData);
+
+
+  if (gameStatsChanged(prevUpdate,&gameData)) {
+    copyGameData(prevUpdate,&gameData);
+    displayCurrentGame(prevUpdate);
+  }
+
+  return isGameOver;
+}
+
+
+// "sleep" function. Calls a delay which reduces the power consumption as the ESP is put into lightSleep mode automatically
+void sleep(uint32_t timeInSeconds) {
+  
+  char buffer[20];
+  dPrintf(F("Sleeping for %d seconds\n"),timeInSeconds);
+  delay(timeInSeconds * 1000);
+  dPrintln(F("Woke up"));
+  
+  time_t t = currentTime();
+  strftime(buffer,sizeof(buffer),"%Y/%m/%d %H:%M:%S",localtime(&t));
+  dPrintf(F("Local time: %s\n"),buffer);
+
+}
+
+void ICACHE_RAM_ATTR ledSwitchInterrupt() {
+    if (digitalRead(SWITCH_PIN_1)) {
+      tftSet(HIGH);
+    }
+    else {
+      if (gameStatus == SCHEDULED) {
+        tftSet(LOW);
+      }
+    }
+}
+
+void ICACHE_RAM_ATTR buttonInterrupt() {
+
+  if (digitalRead(SWITCH_PIN_1) == LOW) {
+    if (gameStatus == SCHEDULED) {
+        tftSet(!digitalRead(SELECT_BUTTON_PIN)); 
+    }
+  }
+}
+
+void cfgUpdate_onStart() {
+  dPrintln(F("CFG update started"));
+  tftMessage(F("CFG update started"));
+}
+
+void cfgUpdate_onEnd() {
+  dPrintln(F("Data files download complete"));
+  tftMessage(F("Downloading data\n\nprogress: complete\n\nrestarting..."));
+  delay(1000);
+  ESP.restart();
+}
+
+void cfgUpdate_onProgress(int cur, int total) {
+  dPrintf(F("Data update progress %d of %d bytes\n"),cur,total);
+  tftMessage(F("Downloading data\n\nprogress: %d%%"),(cur*100)/total);
+}
+
+void cfgUpdate_onError(int err) {
+  dPrintf(F("Data update fatal error code: %d\n"),err);
+}
+
+void performCFGUpdate(const uint32_t version) {
+
+  WiFiClientSecure wificlient;
+  wificlient.setInsecure();
+
+  String queryString = FW_URL;
+  queryString += PROJECT_NAME;
+  queryString += CFG_PREFIX;
+  queryString += version;
+  queryString += CFG_EXT;
+
+  dPrintf(F("Data Image to install: %s\n"),queryString.c_str());
+  dPrint(F("\nDownloading... DON'T TURN OFF!\n"));
+  tftMessage(F("Downloading...\nDON'T TURN OFF!"));
+
+  ESPhttpUpdate.onStart(cfgUpdate_onStart);
+  ESPhttpUpdate.onEnd(cfgUpdate_onEnd);
+  ESPhttpUpdate.onProgress(cfgUpdate_onProgress);
+  ESPhttpUpdate.onError(cfgUpdate_onError);
+
+  t_httpUpdate_return ret = ESPhttpUpdate.updateFS(wificlient,queryString);
+  switch(ret) {
+    case HTTP_UPDATE_FAILED:
+      dPrintf(F("HTTP_UPDATE_FAILED Error (%d): %s\n"), ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      dPrint(F("HTTP_UPDATE_NO_UPDATES\n"));
+      break;
+    case HTTP_UPDATE_OK:
+      dPrintf(F("HTTP Update OK"));
+  }
+  
+}
+
+uint32_t getFSVer() {
+  File file = LittleFS.open(CFG_VERSION_FILENAME,"r");
+  uint32_t result = 0;
+
+  if (!file) {
+    dPrint(F("CFG Version read error\n"));
+  }
+  else {
+    result = file.parseInt();
+  }
+
+  file.close();
+  return result;
+
+}
+
+uint32_t checkForCFGUpdate() {
+
+  String queryString;
+  WiFiClientSecure wificlient;
+  wificlient.setInsecure();
+  HTTPClient httpclient;
+  uint32_t currentVersion = 0;
+
+  
+  currentVersion = getFSVer();
+
+
+  queryString = FW_URL;
+  queryString += PROJECT_NAME;
+  queryString += CFG_VERSION_FILENAME;
+
+  dPrint(F("Query Type: CFG files Check\n"));
+  dPrintf(F("Query URL: %s\n"),queryString.c_str());
+
+  httpclient.begin(wificlient, queryString);
+
+  int httpCode = httpclient.GET();
+  uint32_t availableVersion = 0;
+  if (httpCode == 200) {
+    availableVersion = httpclient.getString().toInt();
+    dPrintf(F("Data files Version Current:  %d\n"),currentVersion);
+    dPrintf(F("Data files Version Available: %d\n"),availableVersion);
+    dPrintf(F("New data files available?:  %s\n"), (availableVersion > currentVersion) ? "Yes" : "No");
+  }
+   else {
+    dPrintf(F("CFG HTTP Error: %d\n"),httpCode);
+  }
+  httpclient.end();
+
+  return (availableVersion > currentVersion) ? availableVersion : 0;
+  
+}
+
+void fwUpdate_onStart() {
+  dPrintln(F("FW update started"));
+  tftMessage(F("FW update started"));
+}
+
+void fwUpdate_onEnd() {
+  dPrintln(F("FW download complete"));
+  tftMessage(F("Downloading firmware\n\nprogress: complete\n\nrestarting..."));
+  delay(1000);
+  ESP.restart();
+}
+
+void fwUpdate_onProgress(int cur, int total) {
+  dPrintf(F("FW update progress %d of %d bytes\n"),cur,total);
+  tftMessage(F("Downloading firmware\n\nprogress: %d%%"),(cur*100)/total);
+}
+
+void fwUpdate_onError(int err) {
+  dPrintf(F("FW update fatal error code: %d\n"),err);
+}
+
+void performFWUpdate(const uint32_t version) {
+
+    WiFiClientSecure wificlient;
+    wificlient.setInsecure();
+
+    String queryString = FW_URL;
+    queryString += PROJECT_NAME;
+    queryString += FW_PREFIX;
+    queryString += version;
+    queryString += FW_EXT;
+
+    dPrintf(F("FW Image to install: %s\n"),queryString.c_str());
+    dPrint(F("\nDownloading... DON'T TURN OFF!\n"));
+    tftMessage(F("Downloading...\nDON'T TURN OFF!"));
+
+    ESPhttpUpdate.onStart(fwUpdate_onStart);
+    ESPhttpUpdate.onEnd(fwUpdate_onEnd);
+    ESPhttpUpdate.onProgress(fwUpdate_onProgress);
+    ESPhttpUpdate.onError(fwUpdate_onError);
+ 
+    t_httpUpdate_return ret = ESPhttpUpdate.update(wificlient,queryString);
+    switch(ret) {
+      case HTTP_UPDATE_FAILED:
+        dPrintf(F("HTTP_UPDATE_FAILED Error (%d): %s\n"), ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
+        break;
+      case HTTP_UPDATE_NO_UPDATES:
+        dPrint(F("HTTP_UPDATE_NO_UPDATES\n"));
+        break;
+      case HTTP_UPDATE_OK:
+        dPrintf(F("HTTP Update OK"));
+    }
+    
+}
+
+uint32_t checkForFWUpdate() {
+
+  // Github forces https which causes issue with redirect for httpclient
+  // easiest way around is to just use setInsecure
+  // 
+
+  HTTPClient httpclient;
+  WiFiClientSecure wificlient;
+  wificlient.setInsecure();
+  if (!wificlient.connect(FW_HOST,443)) {
+    dPrint(F("FW check failed!"));
+    wificlient.stop();
+    return 0;
+  }
+  
+  String queryString = FW_URL;
+  queryString += PROJECT_NAME;
+  queryString += FW_VERSION_FILENAME;
+  dPrint(F("Query Type: Fireware Check\n"));
+  dPrintf(F("Query URL: %s\n"),queryString.c_str());
+
+  httpclient.begin(wificlient, queryString);
+
+  int httpCode = httpclient.GET();
+  uint32_t availableVersion = 0;
+  if (httpCode == 200) {
+    availableVersion = httpclient.getString().toInt();
+    dPrintf(F("FW Version Current:   %d\n"),CURRENT_FW_VERSION);
+    dPrintf(F("FW Version Available: %d\n"),availableVersion);
+    dPrintf(F("FW Update Available:  %s\n"), (availableVersion > CURRENT_FW_VERSION) ? "Yes" : "No");
+  }
+  else {
+    dPrintf(F("FW HTTP Error: %d\n"),httpCode);
+  }
+  httpclient.end();
+
+  return (availableVersion > CURRENT_FW_VERSION) ? availableVersion : 0;
+
+}
+
+void checkForUpdates() {
+  
+  tftMessage(F("Checking for updates..."));
+  uint32_t ver = checkForFWUpdate();
+  if (ver) {
+    tftMessage(F("FW update available\n\n\nPress button to continue"));
+    while (!debouncer.rose()) {
+      debouncer.update();
+      yield();
+    }
+    performFWUpdate(ver);
+  }
+  ver = checkForCFGUpdate();
+  if (ver) {
+    tftMessage(F("New data files available\n\n\nPress buttton to continue"));
+    while (!debouncer.rose()) {
+      debouncer.update();
+      yield();
+    }
+    performCFGUpdate(ver);
+  }
+}
+
+
+
+
+void setup() {
+
+  dBegin(115200);
+  dPrint(F("TFT Sports Scoreboard\n"));
+
+  tft.init(INITR_BLACKTAB);
+  tft.setRotation(TFT_ROTATION);
+  tft.fillScreen(TFT_BLACK);
+
+  if (!LittleFS.begin()) {
+    dPrint(F("FS initialisation failed!\n"));
+    permanentError(F("LittleFS Error"));
+  }
+  dPrint(F("\n\LittleFS initialised.\n"));
+
+  dPrintf(F("Firmware Version: %d\n"),CURRENT_FW_VERSION);
+  uint32_t fsVer = getFSVer();
+  dPrintf(F("Filesystem Version: %d\n"),fsVer);
+  tftMessage(F("TFT Sports Scoreboard\n\nFW Ver: %d\nFS Ver: %d"),CURRENT_FW_VERSION,fsVer);
+
+  pinMode(SWITCH_PIN_1,INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(SWITCH_PIN_1),ledSwitchInterrupt,CHANGE);
+  attachInterrupt(digitalPinToInterrupt(SELECT_BUTTON_PIN),buttonInterrupt,CHANGE);
+  pinMode(LED_BACKLIGHT_PIN,OUTPUT);
+  tftSet(1);
+
+  debouncer.attach(SELECT_BUTTON_PIN,INPUT_PULLUP);
+  debouncer.interval(DEBOUNCE_INTERVAL);
+
+ // wifiManager.resetSettings();
+  wifiManager.setAPCallback(wifiConfigCallback);
+  wifiConnect();
+
+  updateTime();
+
+  checkForUpdates();
+
+  // load the list of NHL teams
+  teamListInit();
+
+  // GUI selection of favourite team if button is being pressed
+  debouncer.update();
+
+
+  if (!loadTeams() || (debouncer.read() == LOW)) {
+      selectTeam();
+  }
+
+  getNextGame();
+
+  gameStatus = SCHEDULED;
+  displayNextGame(&nextGameData);
+
+}
+
+void loop() {
+
+  static time_t waitUntil = 0;
+  static uint32_t gameFinishedTime = 0;
+
+  if (gameStatus == STARTED) {
+    if (currentSportIsNHL && (getAndDisplayCurrentNHLGame(nextGameData.gameID,&currentGameData))) {
+      gameStatus = FINISHED;
+      gameFinishedTime = millis();
+    }
+    else if (!currentSportIsNHL && (getAndDisplayCurrentMLBGame(&nextGameData,&currentGameData))) {
+       gameStatus = FINISHED;
+       gameFinishedTime = millis();
+    }
+    else {
+        sleep(GAME_UPDATE_INTERVAL);
+    }
+  }
+  else if (gameStatus == BUTTON_WAIT) {
+    debouncer.update();
+    if (debouncer.rose() || (currentTime() > nextGameData.startTime) || ((millis() - gameFinishedTime) > AFTER_GAME_RESULTS_DURATION_MS))   {
+      displayNextGame(&nextGameData);
+      gameStatus = SCHEDULED;
+      //ledSwitchInterrupt();
+    }
+  }
+  else if (currentTime() > nextGameData.startTime) {
+    if (gameStatus == FINISHED) {
+      getNextGame();
+      gameStatus = BUTTON_WAIT;
+    }
+    else {
+      gameStatus = STARTED;
+    }
+  }
+  else if (nextGameData.startTime > currentTime()) {
+    sleep(min(MAX_SLEEP_INTERVAL_S,(uint32_t)(nextGameData.startTime - currentTime())));
+  }
+
+  updateTime();
+  yield();
+
+}

@@ -3,20 +3,19 @@
 // Bodmers BMP image rendering function
 #include "BMP_functions.h"
 
-void drawBmp(TFT_eSPI* tft, const char *filename, int16_t x, int16_t y) {
+bool drawBmp(TFT_eSPI* tft, const char *filename, int16_t x, int16_t y) {
 
-  if ((x >= tft->width()) || (y >= tft->height())) return;
+  if ((x >= tft->width()) || (y >= tft->height())) return false;
 
   fs::File bmpFS;
 
-  // Open requested file on SD card
-  bmpFS = SPIFFS.open(filename, "r");
+  bmpFS = LittleFS.open(filename, "r");
 
   if (!bmpFS)
   {
     Serial.print("File not found: ");
     Serial.println(filename);
-    return;
+    return false;
   }
 
   uint32_t seekOffset;
@@ -68,6 +67,8 @@ void drawBmp(TFT_eSPI* tft, const char *filename, int16_t x, int16_t y) {
     else Serial.println("BMP format not recognized.");
   }
   bmpFS.close();
+
+  return true;
 }
 
 // These read 16- and 32-bit types from the SD card file.

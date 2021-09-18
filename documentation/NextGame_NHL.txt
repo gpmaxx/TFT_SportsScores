@@ -1,0 +1,72 @@
+Query URL: http://statsapi.web.nhl.com/api/v1/schedule?sportId=1&teamId=22&startDate=2021-04-06&endDate=2021-04-14
+
+{
+  "games": [
+    {
+      "gamePk": true,
+      "gameType": true,
+      "gameDate": true,
+      "status": {
+        "abstractGameState": true
+      },
+      "teams": {
+        "home": {
+          "team": {
+            "id": true
+          },
+          "leagueRecord": {
+            "wins": true,
+            "losses": true,
+            "ot": true
+          }
+        },
+        "away": {
+          "team": {
+            "id": true
+          },
+          "leagueRecord": {
+            "wins": true,
+            "losses": true,
+            "ot": true
+          }
+        }
+      }
+    }
+  ]
+}
+
+
+{
+  "games": [
+    {
+      "gamePk": 2020020621,
+      "gameType": "R",
+      "gameDate": "2021-04-07T21:00:00Z",
+      "status": {
+        "abstractGameState": "Live"
+      },
+      "teams": {
+        "away": {
+          "leagueRecord": {
+            "wins": 23,
+            "losses": 14,
+            "ot": 2
+          },
+          "team": {
+            "id": 22
+          }
+        },
+        "home": {
+          "leagueRecord": {
+            "wins": 13,
+            "losses": 22,
+            "ot": 4
+          },
+          "team": {
+            "id": 9
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+with imagemagic install use this command to remove/flatten transparency
+
+convert teams.png -background white -alpha remove -alpha off teams_white.png
+
+convert ../transparent/ATL.png -background white -alpha remove -alpha off -resize 50x50 ATL.bmp
+
+
+Source: https://tsnimages.tsn.ca/ImageProvider/Sprite?seoid=mlb&size=96   - edit league and size

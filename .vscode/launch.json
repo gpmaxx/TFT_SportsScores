@@ -1,5 +1,5 @@
 // AUTOMATICALLY GENERATED FILE. PLEASE DO NOT MODIFY IT MANUALLY
-
+//
 // PIO Unified Debugger
 //
 // Documentation: https://docs.platformio.org/page/plus/debugging.html
@@ -13,18 +13,20 @@
             "request": "launch",
             "name": "PIO Debug",
             "executable": "/home/greg/Dropbox/files/development/Arduino/arduino_sketches/TFT_SportsScores/.pio/build/d1_mini/firmware.elf",
+            "projectEnvName": "d1_mini",
             "toolchainBinDir": "/home/greg/.platformio/packages/toolchain-xtensa/bin",
+            "internalConsoleOptions": "openOnSessionStart",
             "preLaunchTask": {
                 "type": "PlatformIO",
                 "task": "Pre-Debug"
-            },
-            "internalConsoleOptions": "openOnSessionStart"
+            }
         },
         {
             "type": "platformio-debug",
             "request": "launch",
             "name": "PIO Debug (skip Pre-Debug)",
             "executable": "/home/greg/Dropbox/files/development/Arduino/arduino_sketches/TFT_SportsScores/.pio/build/d1_mini/firmware.elf",
+            "projectEnvName": "d1_mini",
             "toolchainBinDir": "/home/greg/.platformio/packages/toolchain-xtensa/bin",
             "internalConsoleOptions": "openOnSessionStart"
         }
